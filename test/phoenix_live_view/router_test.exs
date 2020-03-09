@@ -42,11 +42,6 @@ defmodule Phoenix.LiveView.RouterTest do
              ~r/<span[^>]*data-phx-view="LiveViewTest.DashboardLive"[^>]*style="flex-grow">/
   end
 
-  test "routing with default layout", %{conn: conn} do
-    conn = get(conn, "/router/thermo_session/123")
-    assert conn.resp_body =~ "LAYOUT"
-  end
-
   test "live non-action helpers", %{conn: conn} do
     assert Routes.live_path(conn, DashboardLive, 1) == "/router/thermo_defaults/1"
     assert Routes.custom_live_path(conn, DashboardLive, 1) == "/router/thermo_session/custom/1"
@@ -63,11 +58,7 @@ defmodule Phoenix.LiveView.RouterTest do
 
   test "user-defined metadata is available inside of metadata key" do
     assert Phoenix.LiveViewTest.Router
-      |> Phoenix.Router.route_info("GET", "/opts-with-metadata", nil)
-      |> Map.get(:route_name) == "opts"
-
-    assert Phoenix.LiveViewTest.Router
-      |> Phoenix.Router.route_info("GET", "/widget-with-metadata", nil)
-      |> Map.get(:route_name) == "widget"
+           |> Phoenix.Router.route_info("GET", "/thermo-with-metadata", nil)
+           |> Map.get(:route_name) == "opts"
   end
 end

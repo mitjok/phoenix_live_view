@@ -50,12 +50,15 @@ defmodule Phoenix.LiveView.Plug do
   end
 
   defp put_new_layout_from_router(conn, opts) do
-    cond do
-      live_link?(conn) -> Phoenix.Controller.put_layout(conn, false)
-      layout = opts[:layout] -> Phoenix.Controller.put_layout(conn, layout)
-      layout = conn.private[:phoenix_root_layout] -> Phoenix.Controller.put_layout(conn, layout)
-      layout = opts[:inferred_layout] -> Phoenix.Controller.put_new_layout(conn, layout)
-      true -> conn
+    if live_link?(conn) do
+      Phoenix.Controller.put_layout(conn, false)
+    else
+      with :error <- Keyword.fetch(opts, :layout),
+           :error <- Map.fetch(conn.private, :phoenix_live_layout) do
+        Phoenix.Controller.put_layout(conn, false)
+      else
+        {:ok, layout} -> Phoenix.Controller.put_layout(conn, layout)
+      end
     end
   end
 

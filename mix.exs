@@ -1,7 +1,7 @@
 defmodule Phoenix.LiveView.MixProject do
   use Mix.Project
 
-  @version "0.8.1"
+  @version "0.9.0"
 
   def project do
     [
@@ -10,6 +10,7 @@ defmodule Phoenix.LiveView.MixProject do
       elixir: "~> 1.7",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
+      compilers: compilers(Mix.env()),
       package: package(),
       xref: [exclude: [Floki]],
       deps: deps(),
@@ -20,6 +21,9 @@ defmodule Phoenix.LiveView.MixProject do
       """
     ]
   end
+
+  defp compilers(:test), do: [:phoenix] ++ Mix.compilers()
+  defp compilers(_), do: Mix.compilers()
 
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]

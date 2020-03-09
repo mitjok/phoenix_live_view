@@ -2,20 +2,23 @@ defmodule Phoenix.LiveViewTest.Router do
   use Phoenix.Router
   import Phoenix.LiveView.Router
 
-  pipeline :browser do
-    plug :accepts, ["html"]
-
+  pipeline :setup_session do
     plug Plug.Session,
       store: :cookie,
       key: "_live_view_key",
       signing_salt: "/VEDsdfsffMnp5"
 
     plug :fetch_session
+  end
+
+  pipeline :browser do
+    plug :setup_session
+    plug :accepts, ["html"]
     plug :fetch_live_flash
   end
 
   pipeline :bad_layout do
-    plug :put_layout, {UnknownView, :unknown_template}
+    plug :put_live_layout, {UnknownView, :unknown_template}
   end
 
   scope "/", Phoenix.LiveViewTest do
@@ -58,11 +61,7 @@ defmodule Phoenix.LiveViewTest.Router do
       # The layout option needs to have higher precedence than bad layout
       live "/bad_layout", LayoutLive
       live "/layout", LayoutLive, layout: {Phoenix.LiveViewTest.LayoutView, :app}
-    end
-
-    scope "/" do
-      live "/root-layout", LayoutLive,
-        private: %{phoenix_root_layout: {Phoenix.LiveViewTest.LayoutView, "root.html"}}
+      live "/parent_layout", ParentLayoutLive, layout: false
     end
 
     # integration params
@@ -77,7 +76,7 @@ defmodule Phoenix.LiveViewTest.Router do
   end
 
   scope "/", as: :user_defined_metadata, alias: Phoenix.LiveViewTest do
-    get "/widget-with-metadata", Controller, :widget, metadata: %{route_name: "widget"}
-    live "/opts-with-metadata", OptsLive,  metadata: %{route_name: "opts"}
+    pipe_through :setup_session
+    live "/thermo-with-metadata", ThermostatLive, metadata: %{route_name: "opts"}
   end
 end

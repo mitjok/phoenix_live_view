@@ -81,29 +81,44 @@ defmodule Phoenix.LiveView.Utils do
   def post_mount_prune(%Socket{} = socket) do
     socket
     |> clear_changed()
-    |> drop_private([:connect_params, :assigned_new])
+    |> drop_private([:connect_params, :assign_new])
   end
 
   @doc """
   Renders the view with socket into a rendered struct.
   """
   def to_rendered(socket, view) do
-    case render_view(socket, view) do
-      %Rendered{} = rendered ->
-        rendered
+    inner_content =
+      render_assigns(socket)
+      |> view.render()
+      |> check_rendered!(view)
 
-      other ->
-        raise RuntimeError, """
-        expected #{inspect(view)}.render/1 to return a %Phoenix.LiveView.Rendered{} struct
+    case layout(socket, view) do
+      {layout_mod, layout_template} ->
+        socket = assign(socket, :inner_content, inner_content)
 
-        Ensure your render function uses ~L, or your eex template uses the .leex extension.
+        layout_template
+        |> layout_mod.render(render_assigns(socket))
+        |> check_rendered!(layout_mod)
 
-        Got:
-
-            #{inspect(other)}
-
-        """
+      false ->
+        inner_content
     end
+  end
+
+  defp check_rendered!(%Rendered{} = rendered, _view), do: rendered
+
+  defp check_rendered!(other, view) do
+    raise RuntimeError, """
+    expected #{inspect(view)} to return a %Phoenix.LiveView.Rendered{} struct
+
+    Ensure your render function uses ~L, or your eex template uses the .leex extension.
+
+    Got:
+
+        #{inspect(other)}
+
+    """
   end
 
   @doc """
@@ -113,11 +128,10 @@ defmodule Phoenix.LiveView.Utils do
   def get_flash(%{} = flash, key), do: flash[key]
 
   @doc """
-  Merges a new flash with the socket's flash messages.
+  Puts a new flash with the socket's flash messages.
   """
-  def merge_flash(%Socket{} = socket, %{} = new_flash) do
-    current_flash = get_flash(socket)
-    assign(socket, :flash, Map.merge(current_flash, new_flash))
+  def replace_flash(%Socket{} = socket, %{} = new_flash) do
+    assign(socket, :flash, new_flash)
   end
 
   @doc """
@@ -303,7 +317,11 @@ defmodule Phoenix.LiveView.Utils do
   end
 
   defp do_mount_opt(socket, :layout, {mod, template}) when is_atom(mod) and is_binary(template) do
-    %Socket{socket | private: Map.put(socket.private, :layout, {mod, template})}
+    %Socket{socket | private: Map.put(socket.private, :phoenix_live_layout, {mod, template})}
+  end
+
+  defp do_mount_opt(socket, :layout, false) do
+    %Socket{socket | private: Map.put(socket.private, :phoenix_live_layout, false)}
   end
 
   defp do_mount_opt(_socket, :layout, bad_layout) do
@@ -330,25 +348,15 @@ defmodule Phoenix.LiveView.Utils do
     %Socket{socket | private: Map.drop(private, keys)}
   end
 
-  defp render_view(socket, view) do
-    inner_content = view.render(render_assigns(socket))
-
-    case layout(socket, view) do
-      {layout_mod, layout_template} ->
-        socket = assign(socket, :inner_content, inner_content)
-        layout_mod.render(layout_template, render_assigns(socket))
-
-      nil ->
-        inner_content
-    end
-  end
-
   defp render_assigns(socket) do
     Map.put(socket.assigns, :socket, socket)
   end
 
   defp layout(socket, view) do
-    socket.private[:layout] || view.__live__()[:layout]
+    case socket.private do
+      %{phoenix_live_layout: layout} -> layout
+      %{} -> view.__live__()[:layout] || false
+    end
   end
 
   defp flash_salt(endpoint_mod) when is_atom(endpoint_mod) do
