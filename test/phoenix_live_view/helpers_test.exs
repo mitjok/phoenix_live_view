@@ -13,6 +13,7 @@ defmodule Phoenix.LiveView.HelpersTest do
       assert dom =~ ~s|data-phx-link="patch"|
       assert dom =~ ~s|data-phx-link-state="push"|
       assert dom =~ ~s|text</a>|
+      refute dom =~ ~s|to="/|
     end
 
     test "forwards dom attribute options" do
@@ -52,6 +53,7 @@ defmodule Phoenix.LiveView.HelpersTest do
       assert dom =~ ~s|data-phx-link="redirect"|
       assert dom =~ ~s|data-phx-link-state="push"|
       assert dom =~ ~s|text</a>|
+      refute dom =~ ~s|to="/|
     end
 
     test "forwards dom attribute options" do
@@ -84,6 +86,34 @@ defmodule Phoenix.LiveView.HelpersTest do
 
     test "uses HTML safe protocol" do
       assert live_redirect(123, to: "page") |> safe_to_string() =~ "123</a>"
+    end
+  end
+
+  describe "live_title_tag/2" do
+    test "prefix only" do
+      assert safe_to_string(live_title_tag("My Title", prefix: "MyApp – ")) ==
+               ~s|<title data-prefix="MyApp – ">MyApp – My Title</title>|
+    end
+
+    test "suffix only" do
+      assert safe_to_string(live_title_tag("My Title", suffix: " – MyApp")) ==
+               ~s|<title data-suffix=" – MyApp">My Title – MyApp</title>|
+    end
+
+    test "prefix and suffix" do
+      assert safe_to_string(live_title_tag("My Title", prefix: "Welcome: ", suffix: " – MyApp")) ==
+               ~s|<title data-prefix="Welcome: " data-suffix=" – MyApp">Welcome: My Title – MyApp</title>|
+    end
+
+    test "without prefix or suffix" do
+      assert safe_to_string(live_title_tag("My Title")) ==
+               ~s|<title>My Title</title>|
+    end
+
+    test "bad options" do
+      assert_raise ArgumentError, ~r/expects a :prefix and\/or :suffix/, fn ->
+        live_title_tag("bad", bad: :bad)
+      end
     end
   end
 end

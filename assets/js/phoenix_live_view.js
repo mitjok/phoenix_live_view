@@ -103,6 +103,8 @@ let isObject = (obj) => {
   return obj !== null && typeof obj === "object" && !(obj instanceof Array)
 }
 
+let isEqualObj = (obj1, obj2) =>  JSON.stringify(obj1) === JSON.stringify(obj2)
+
 let isEmpty = (obj) => {
   for (let x in obj){ return false }
   return true
@@ -498,8 +500,7 @@ export class LiveSocket {
   }
 
   destroyViewByEl(el){
-    let rootEl = el.closest(`${PHX_VIEW_SELECTOR}:not([${PHX_PARENT_ID}])`)
-    let root = this.getRootById(rootEl.id)
+    let root = this.getRootById(el.getAttribute(PHX_ROOT_ID))
     root.destroyDescendent(el.id)
   }
 
@@ -904,7 +905,11 @@ export let DOM = {
     }
   },
 
-  putTitle(title){ document.title = title },
+  putTitle(str){
+    let titleEl = document.querySelector("title")
+    let {prefix, suffix} = titleEl.dataset
+    document.title = `${prefix || ""}${str}${suffix || ""}`
+  },
 
   debounce(el, event, phxDebounce, phxThrottle, callback){
     let debounce = el.getAttribute(phxDebounce)
@@ -1245,7 +1250,8 @@ export class View {
     this.joinCallback = function(){}
     this.pendingJoinOps = this.parent ? null : []
     this.viewHooks = {}
-    this.children = this.parent ? null : {[this.id]: {}}
+    this.children = this.parent ? null : {}
+    this.root.children[this.id] = {}
     this.channel = this.liveSocket.channel(`lv:${this.id}`, () => {
       return {
         url: this.href,
@@ -1426,7 +1432,8 @@ export class View {
 
     patch.before("updated", (fromEl, toEl) => {
       let hook = this.getHook(fromEl)
-      if(hook && !fromEl.isEqualNode(toEl)){
+      let isIgnored = hook && fromEl.getAttribute(this.binding(PHX_UPDATE)) === "ignore"
+      if(hook && !fromEl.isEqualNode(toEl) && !(isIgnored && isEqualObj(fromEl.dataset, toEl.dataset))){
         updatedHookIds.add(fromEl.id)
         hook.__trigger__("beforeUpdate")
       }
@@ -1482,7 +1489,6 @@ export class View {
     let child = this.getChildById(el.id)
     if(!child){
       let view = new View(el, this.liveSocket, this)
-      this.root.children[this.id] = this.root.children[this.id] || {}
       this.root.children[this.id][view.id] = view
       view.join()
       this.childJoins++

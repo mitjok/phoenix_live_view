@@ -112,18 +112,6 @@ defmodule Phoenix.LiveView do
   to inline LiveView templates. If you want to use `Phoenix.HTML` helpers,
   remember to `use Phoenix.HTML` at the top of your `LiveView`.
 
-  A separate `.leex` HTML template can also be rendered within
-  your `render/1` callback by delegating to an existing `Phoenix.View`
-  module in your application. For example:
-
-      defmodule AppWeb.ThermostatLive do
-        use Phoenix.LiveView
-
-        def render(assigns) do
-          Phoenix.View.render(AppWeb.PageView, "page.html", assigns)
-        end
-      end
-
   With a LiveView defined, you first define the `socket` path in your endpoint,
   and point it to `Phoenix.LiveView.Socket`:
 
@@ -239,6 +227,39 @@ defmodule Phoenix.LiveView do
   `handle_info` just like a GenServer, and update our socket assigns. Whenever
   a socket's assigns change, `render/1` is automatically invoked, and the
   updates are sent to the client.
+
+  ## Collocating templates
+
+  In the examples above, we have placed the template directly inside the
+  LiveView:
+
+      defmodule AppWeb.ThermostatLive do
+        use Phoenix.LiveView
+
+        def render(assigns) do
+          ~L"""
+          Current temperature: <%= @temperature %>
+          """
+        end
+
+  For larger templates, you can place them in a file in the same directory
+  and same name as the LiveView. For example, if the file above is placed
+  at `lib/my_app_web/live/thermostat_live.ex`, you can also remove the
+  `render/1` definition above and instead put the template code at
+  `lib/my_app_web/live/thermostat_live.html.leex`.
+
+  Alternatively, you can keep the `render/1` callback but delegate to an
+  existing `Phoenix.View` module in your application. For example:
+
+      defmodule AppWeb.ThermostatLive do
+        use Phoenix.LiveView
+
+        def render(assigns) do
+          Phoenix.View.render(AppWeb.PageView, "page.html", assigns)
+        end
+      end
+
+  In all cases, each assign in the template will be accessible as `@assign`.
 
   ## Assigns and LiveEEx Templates
 
@@ -496,6 +517,19 @@ defmodule Phoenix.LiveView do
   from the client when an input is invalid, instead allowing the browser's native
   validation UI to drive user interaction. Once the input becomes valid, change and
   submit events will be sent normally.
+
+      <input type="number">
+
+  This is known to have a plethora of problems including accessibility, large numbers
+  are converted to exponential notation and scrolling can accidentally increase or
+  decrease the number.
+
+  As of early 2020, the following avoids these pitfalls and will likely serve your
+  application's needs and users much better. According to https://caniuse.com/#search=inputmode,
+  the following is supported by 90% of the global mobile market with Firefox yet to implement.
+
+      <input type="text" inputmode="numeric" pattern="[0-9]*">
+
 
   ### Password inputs
 
@@ -854,11 +888,47 @@ defmodule Phoenix.LiveView do
 
   ## Live Layouts
 
-  Besides the application layout your LiveView is rendered within,
-  LiveView can also have live layouts, that are rendered within the
-  LiveView life-cycle, on every change.
+  When working with LiveViews, there is usually three layouts to be
+  considered:
 
-  For example, you can define a new `live.html.leex` layout with the
+    * the root layout - this is a layout used by both LiveView and
+      regular views
+
+    * the app layout - this is the default application layout which
+      is not included or used by LiveViews;
+
+    * the live layout - this is the layout which wraps a LiveView and
+      is rendered as part of the LiveView life-cycle
+
+  Overall, those layouts are found in `templates/layouts` with the
+  following names:
+
+      * root.html.eex
+      * app.html.eex
+      * live.html.leex
+
+  The "root" layout is shared by both "app" and "live" layout. It
+  is rendered only on the initial request and therefore it has
+  access to the `@conn` assign. The root layout must be defined
+  in your router:
+
+      plug :put_root_layout, {MyApp.LayoutView, :root}
+
+  Alternatively, the layout can be passed to the `live` macro
+  in the router:
+
+      live "/dashboard", MyApp.Dashboard, layout: {MyApp.LayoutView, :root}
+
+  If you want the "root" layout to only apply to LiveViews, you
+  can pass it as a option or define it in a specific pipeline that
+  is only used by LiveView routes.
+
+  The "app" and "live" layouts are often small and similar to each
+  other, but the "app" layout uses the `@conn` and used as part of
+  the regular request life-cycle, and the "live" layout is part of
+  the LiveView and therefore has direct access to the `@socket`.
+
+  For example, you can define a new `live.html.leex` layout with
   dynamic content. You must use `@inner_content` where the output
   of the actual template will be placed at:
 
@@ -866,15 +936,15 @@ defmodule Phoenix.LiveView do
       <p><%= live_flash(@flash, :error) %></p>
       <%= @inner_content %>
 
-  Finally, update your LiveView to pass the `:layout` option to
-  `use Phoenix.LiveView`:
+  To use the live layout, update your LiveView to pass the `:layout`
+  option to `use Phoenix.LiveView`:
 
       use Phoenix.LiveView, layout: {AppWeb.LayoutView, "live.html"}
 
-  The live layout given on `use` is only available for the root live
-  view. If you are rendering child live views or if you want to opt-in
-  to a layout only in certain occasions, you can provide the `:layout`
-  as an option in mount:
+  The `:layout` option does not apply for LiveViews rendered within
+  other LiveViews. If you are rendering child live views or if you
+  want to opt-in to a layout only in certain occasions, use the
+  `:layout` as an option in mount:
 
         def mount(_params, _session, socket) do
           socket = assign(socket, new_message_count: 0)
@@ -901,6 +971,12 @@ defmodule Phoenix.LiveView do
   Then access `@page_title` in the app layout:
 
       <title><%= @page_title %></title>
+
+  You can also use `Phoenix.LiveView.Helpers.live_title_tag/2` to support
+  adding automatic prefix and suffix to the page title when rendered and
+  on subsequent updates:
+
+      <%= live_title_tag @page_title, prefix: "MyApp – " %>
 
   Now, although the app layout is not updated by LiveView, by simply assigning
   to `page_title`, LiveView knows you want the title to be updated:
@@ -1089,14 +1165,13 @@ defmodule Phoenix.LiveView do
 
       <button phx-click="clicked" phx-window-keydown="key">...</button>
 
-  In the case of forms, when a `phx-change` is sent to the server, the input element
-  which emitted the change receives the `phx-change-loading` class, along wiht the
-  parent form tag.
-
   On click, would receive the `phx-click-loading` class, and on keydown would receive
   the `phx-keydown-loading` class. The css loading classes are maintained until an
-  acknowledgement is received on the client for the pushed event. The following events
-  receive css loadng classes:
+  acknowledgement is received on the client for the pushed event.
+
+  In the case of forms, when a `phx-change` is sent to the server, the input element
+  which emitted the change receives the `phx-change-loading` class, along with the
+  parent form tag. The following events receive css loading classes:
 
     - `phx-click` - `phx-click-loading`
     - `phx-change` - `phx-change-loading`
@@ -1268,33 +1343,14 @@ defmodule Phoenix.LiveView do
 
   """
   defmacro __using__(opts) do
-    quote do
-      opts = unquote(opts)
+    quote bind_quoted: [opts: opts] do
       import Phoenix.LiveView
       import Phoenix.LiveView.Helpers
       @behaviour Phoenix.LiveView
-      @before_compile Phoenix.LiveView
+      @before_compile Phoenix.LiveView.Renderer
 
       @doc false
-      @__live__ Phoenix.LiveView.__live__(__MODULE__, opts)
-      def __live__, do: @__live__
-    end
-  end
-
-  # TODO: Remove once the deprecation period is over
-  @doc false
-  defmacro __before_compile__(env) do
-    if Module.defines?(env.module, {:mount, 3}) or not Module.defines?(env.module, {:mount, 2}) do
-      :ok
-    else
-      IO.warn(
-        "mount(session, socket) is deprecated, please define mount(params, session, socket) instead",
-        Macro.Env.stacktrace(env)
-      )
-
-      quote do
-        def mount(_params, session, socket), do: mount(session, socket)
-      end
+      def __live__, do: unquote(Macro.escape(Phoenix.LiveView.__live__(__MODULE__, opts)))
     end
   end
 

@@ -13,7 +13,7 @@ installing from Hex, use the latest version from there:
 ```elixir
 def deps do
   [
-    {:phoenix_live_view, "~> 0.9.0"},
+    {:phoenix_live_view, "~> 0.10.0"},
     {:floki, ">= 0.0.0", only: :test}
   ]
 end
@@ -41,21 +41,7 @@ config :my_app, MyAppWeb.Endpoint,
    ]
 ```
 
-Next, add the `Phoenix.LiveView.Router.fetch_live_flash` plug to your browser pipeline, in place of `:fetch_flash`:
-
-```diff
-# lib/my_app_web/router.ex
-import Phoenix.LiveView.Router
-
-pipeline :browser do
-  ...
-  plug :fetch_session
-- plug :fetch_flash
-+ plug :fetch_live_flash
-end
-```
-
-Then add the following imports to your web file in `lib/my_app_web.ex`:
+Next, add the following imports to your web file in `lib/my_app_web.ex`:
 
 ```elixir
 # lib/my_app_web.ex
@@ -79,6 +65,19 @@ def router do
     ...
     import Phoenix.LiveView.Router
   end
+end
+```
+
+Then add the `Phoenix.LiveView.Router.fetch_live_flash` plug to your browser pipeline, in place of `:fetch_flash`:
+
+```diff
+# lib/my_app_web/router.ex
+
+pipeline :browser do
+  ...
+  plug :fetch_session
+- plug :fetch_flash
++ plug :fetch_live_flash
 end
 ```
 
@@ -171,6 +170,8 @@ Ensure you have placed a CSRF meta tag inside the `<head>` tag in your layout (`
 <%= csrf_meta_tag() %>
 <script type="text/javascript" src="<%= Routes.static_path(@conn, "/js/app.js") %>"></script>
 ```
+
+LiveView no longer uses the default app layout. Instead, use `put_root_layout`. Note, however, that the layout given to `put_root_layout` must use `@inner_content` instead of `<%= render(@view_module, @view_template, assigns) %>` and that the root layout will also be used by regular views. Therefore, we recommend setting `put_root_layout` in a pipeline that is exclusive to LiveViews. Check the [Live Layouts](https://hexdocs.pm/phoenix_live_view/Phoenix.LiveView.html#module-live-layouts) section of the docs.
 
 Enable connecting to a LiveView socket in your `app.js` file.
 
