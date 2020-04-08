@@ -156,7 +156,7 @@ defmodule Phoenix.LiveView.Diff do
 
   ## Example
 
-      {:diff diff, new_components} = Diff.update_components(socket, state.components, update)
+      {:diff, diff, new_components} = Diff.update_components(socket, state.components, update)
   """
   def update_component(socket, components, {module, id, updated_assigns}) do
     case fetch_cid(module, id, components) do
@@ -187,7 +187,7 @@ defmodule Phoenix.LiveView.Diff do
   Converts a component to a rendered struct.
   """
   def component_to_rendered(socket, component, assigns) when is_map(assigns) do
-    socket = mount_component(socket, component)
+    socket = mount_component(socket, component, %{})
     assigns = maybe_call_preload!(component, assigns)
 
     socket
@@ -337,22 +337,30 @@ defmodule Phoenix.LiveView.Diff do
 
       %{} ->
         cid = uuids
-        socket = mount_component(socket, component)
+        socket = mount_component(socket, component, %{myself: cid})
         id_to_components = Map.put(id_to_components, id, dump_component(socket, cid))
         cid_to_ids = Map.put(cid_to_ids, cid, id)
         {cid, true, {id_to_components, cid_to_ids, uuids + 1}}
     end
   end
 
-  defp mount_component(socket, component) do
-    socket = configure_socket_for_component(socket, %{}, %{}, new_fingerprints())
+  defp mount_component(socket, component, assigns) do
+    socket =
+      configure_socket_for_component(
+        socket,
+        assigns,
+        Map.take(socket.private, [:conn_session]),
+        new_fingerprints()
+      )
+      |> Utils.assign(:flash, %{})
+
     Utils.maybe_call_mount!(socket, component, [socket])
   end
 
   defp configure_socket_for_component(socket, assigns, private, prints) do
     %{
       socket
-      | assigns: Map.put(assigns, :flash, %{}),
+      | assigns: assigns,
         private: private,
         fingerprints: prints,
         changed: %{}
@@ -454,7 +462,7 @@ defmodule Phoenix.LiveView.Diff do
         socket = Utils.clear_changed(%{socket | fingerprints: component_prints})
         {socket, pending_components, Map.put(component_diffs, cid, diff), components}
       else
-        {socket, pending_components, component_diffs, components}
+        {socket, pending_components, Map.put(component_diffs, cid, %{}), components}
       end
 
     id_to_components = Map.put(id_to_components, id, dump_component(socket, cid))

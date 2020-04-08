@@ -39,7 +39,7 @@ defmodule Phoenix.LiveComponent do
 
   First `c:mount/1` is called only with the socket. `mount/1` can be used
   to set any initial state. Then `c:update/2` is invoked with all of the
-  assigns given to `live_component/2`. The default implementation of
+  assigns given to `live_component/3`. The default implementation of
   `c:update/2` simply merges all assigns into the socket. Then, after the
   component is updated, `c:render/1` is called with all assigns.
 
@@ -51,7 +51,7 @@ defmodule Phoenix.LiveComponent do
 
   ## Stateful components life-cycle
 
-  A stateful component is a component that receives an `:id` on `live_component/2`:
+  A stateful component is a component that receives an `:id` on `live_component/3`:
 
       <%= live_component @socket, HeroComponent, id: :hero, content: @content %>
 
@@ -83,21 +83,34 @@ defmodule Phoenix.LiveComponent do
 
   Stateful components can also implement the `c:handle_event/3` callback
   that works exactly the same as in LiveView. For a client event to
-  reach a component, the tag must be annotated with a `phx-target`
-  annotation which must be a query selector to an element inside the
-  component. For example, if the `UserComponent` above is started with
-  the `:id` of `13`, it will have the DOM ID of `user-13`. Using a query
-  selector, we can sent an event to it with:
+  reach a component, the tag must be annotated with a `phx-target`.
+  If you want to send the event to yourself, you can simply use the
+  `@myself` assign, which is an *internal unique reference* to the
+  component instance:
+
+      <a href="#" phx-click="say_hello" phx-target="<%= @myself %>">
+        Say hello!
+      </a>
+
+  Note `@myself` is not set for stateless components, as they cannot
+  receive events.
+
+  If you want to target another component, you can also pass an ID
+  or a class selector to any element inside the targeted component.
+  For example, if there is a `UserComponent` with `:id` of `13`, it
+  will have the DOM ID of `user-13`. Using a query selector, we can
+  send an event to it with:
 
       <a href="#" phx-click="say_hello" phx-target="#user-13">
         Say hello!
       </a>
 
-  Then `c:handle_event/3` will be called by with the "say_hello" event.
-  When `c:handle_event/3` is called for a component, only the diff of
-  the component is sent to the client, making them extremely efficient.
+  In both cases, `c:handle_event/3` will be called with the
+  "say_hello" event. When `c:handle_event/3` is called for a component,
+  only the diff of the component is sent to the client, making them
+  extremely efficient.
 
-  Any valid query selector for `phx-target` is supported, provided the
+  Any valid query selector for `phx-target` is supported, provided that the
   matched nodes are children of a LiveView or LiveComponent, for example
   to send the `close` event to multiple components:
 
@@ -169,11 +182,11 @@ defmodule Phoenix.LiveComponent do
   ### LiveView as the source of truth
 
   If the LiveView is the source of truth, the LiveView will be responsible
-  for fetching all of the cards in a board. Then it will call `live_component/2`
+  for fetching all of the cards in a board. Then it will call `live_component/3`
   for each card, passing the card struct as argument to CardComponent:
 
       <%= for card <- @cards do %>
-        <%= live_component CardComponent, card: card, board_id: @id %>
+        <%= live_component @socket, CardComponent, card: card, board_id: @id %>
       <% end %>
 
   Now, when the user submits a form inside the CardComponent to update the
@@ -240,7 +253,7 @@ defmodule Phoenix.LiveComponent do
   only by passing the IDs:
 
       <%= for card_id <- @card_ids do %>
-        <%= live_component CardComponent, card_id: card_id, board_id: @id %>
+        <%= live_component @socket, CardComponent, card_id: card_id, board_id: @id %>
       <% end %>
 
   Now, each CardComponent loads their own card. Of course, doing so per

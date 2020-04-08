@@ -6,7 +6,7 @@ defmodule Phoenix.LiveView.LiveViewTest do
 
   import Phoenix.LiveViewTest
   alias Phoenix.LiveView
-  alias Phoenix.LiveViewTest.{Endpoint, DOM, ClockLive, ClockControlsLive, LayoutView}
+  alias Phoenix.LiveViewTest.{Endpoint, DOM, ClockLive, ClockControlsLive, LayoutView, NestedLive}
 
   @endpoint Endpoint
   @moduletag :capture_log
@@ -114,7 +114,7 @@ defmodule Phoenix.LiveView.LiveViewTest do
         get(conn, "/redir?during=connected&kind=push_redirect&child_to=/thermo?from_child=true")
 
       assert html_response(conn, 200) =~ "child_content"
-      assert {:error, %{redirect: "/thermo?from_child=true"}} = live(conn)
+      assert {:error, {:redirect, %{to: "/thermo?from_child=true"}}} = live(conn)
     end
 
     test "child push_patch when disconnected", %{conn: conn} do
@@ -147,7 +147,7 @@ defmodule Phoenix.LiveView.LiveViewTest do
     test "child redirect when connected", %{conn: conn} do
       conn = get(conn, "/redir?during=connected&kind=redirect&child_to=/thermo?from_child=true")
       assert html_response(conn, 200) =~ "parent_content"
-      assert {:error, %{redirect: "/thermo?from_child=true"}} = live(conn)
+      assert {:error, {:redirect, %{to: "/thermo?from_child=true"}}} = live(conn)
     end
   end
 
@@ -161,7 +161,10 @@ defmodule Phoenix.LiveView.LiveViewTest do
 
     test "renders a live view with custom session and a router", %{conn: conn} do
       {:ok, view, _} =
-        live_isolated(conn, Phoenix.LiveViewTest.DashboardLive, session: %{"hello" => "world"}, router: MyApp.Router)
+        live_isolated(conn, Phoenix.LiveViewTest.DashboardLive,
+          session: %{"hello" => "world"},
+          router: MyApp.Router
+        )
 
       assert render(view) =~ "session: %{&quot;hello&quot; =&gt; &quot;world&quot;}"
     end
@@ -354,6 +357,14 @@ defmodule Phoenix.LiveView.LiveViewTest do
     test "widget style live_render", %{conn: conn} do
       conn = get(conn, "/widget")
       assert html_response(conn, 200) =~ ~r/WIDGET:[\S\s]*time: 12:00 NY/
+    end
+
+    test "socket.assigns while rendering", %{conn: conn} do
+      assert_raise Plug.Conn.WrapperError,
+                   ~r/\(KeyError\) key :boom not found in: %Phoenix\.LiveView\.Socket\.AssignsNotInSocket\{\}/,
+                   fn ->
+                     live(conn, "/assigns-not-in-socket")
+                   end
     end
   end
 
@@ -612,6 +623,10 @@ defmodule Phoenix.LiveView.LiveViewTest do
                :ok = GenServer.call(view.pid, {:dynamic_child, :static})
                catch_exit(render(view))
              end) =~ "duplicate LiveView id: \"static\""
+    end
+
+    test "live view nested inside a live component" do
+      assert {:ok, _view, _html} = live_isolated(build_conn(), NestedLive)
     end
 
     @tag session: %{nest: []}

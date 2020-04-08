@@ -1,14 +1,40 @@
-## 0.10.1
+## 0.11.1-dev
+
+### Bug fixes
+  - Fix readonly states failing to be undone after an empty diff
+  - Fix dynamically added child failing to be joined by the client
+  - Fix teardown bug causing stale client sessions to attempt a rejoin on reconnect
+  - Fix orphaned prepend/append content across joins
+  - Track `unless` in LiveEEx engine
+
+### Backwards incompatible changes
+  - `render_event`/`render_click` and friends now expect a DOM ID selector to be given when working with components. For example, instead of `render_click([live, "user-13"])`, you should write `render_click([live, "#user-13"])`, mirroring the `phx-target` API
+
+## 0.11.0 (2020-04-06)
+
+### Backwards incompatible changes
+  - Remove socket.assigns during render to avoid change tracking bugs. If you were previously relying on passing `@socket` to functions then referencing socket assigns, pass the explicit assign instead to your functions from the template
 
 ### Bug fixes
   - Fix client issue with greater than two levels of LiveView nesting
+  - Fix bug causing entire LiveView to be re-rendering with only a component changed
+  - Fix issue where rejoins would not trigger phx:page-loading-stop
+
+### Enhancements
+  - Support deep change tracking so `@foo.bar` only executes and diffs when bar changes
+  - Add `@myself` assign, to allow components to target themselves instead of relying on a DOM id, for example: `phx-target="<%= @myself %>"`
+  - Optimize various client rendering scenarios for faster DOM patching
+  of components and append/prepended content
+  - Add `enableProfiling()` and `disableProfiling()` to `LiveSocket` for client performance profiling to aid the development process
+  - Allow LiveViews to be rendered inside LiveComponents
+  - Add support for clearing flash inside components
 
 ## 0.10.0 (2020-03-18)
 
 ### Backwards incompatible changes
   - Rename socket assign `@live_view_module` to `@live_module`
   - Rename socket assign `@live_view_action` to `@live_action`
-  - LiveView no longer uses the default app layout and `put_live_layout` is no longer supported. Instead, use `put_root_layout`. Note, however, that the layout given to `put_root_layout` must use `@inner_content` instead of `<%= render(@view_module, @view_template, assigns) %>` and that the root layout will also be used by regular views. Therefore, we recommend setting `put_root_layout` in a pipeline that is exclusive to LiveViews
+  - LiveView no longer uses the default app layout and `put_live_layout` is no longer supported. Instead, use `put_root_layout`. Note, however, that the layout given to `put_root_layout` must use `@inner_content` instead of `<%= render(@view_module, @view_template, assigns) %>` and that the root layout will also be used by regular views. Check the [Live Layouts](https://hexdocs.pm/phoenix_live_view/Phoenix.LiveView.html#module-live-layouts) section of the docs.
 
 ### Bug fixes
   - Fix loading states causing nested LiveViews to be removed during live navigation

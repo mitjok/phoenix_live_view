@@ -208,7 +208,7 @@ defmodule Phoenix.LiveView.Channel do
 
       params == :not_mounted_at_router ->
         raise "cannot invoke handle_params/3 for #{inspect(view)} because #{inspect(view)}" <>
-                "was not mounted at the router with the live/3 macro under URL #{inspect(url)}"
+                " was not mounted at the router with the live/3 macro under URL #{inspect(url)}"
 
       true ->
         params
@@ -228,8 +228,8 @@ defmodule Phoenix.LiveView.Channel do
       {:redirect, %{to: _to} = opts} ->
         {:redirect, copy_flash(new_state, Utils.get_flash(new_socket), opts), new_state}
 
-      {:live, :redirect, %{to: to} = opts} ->
-        send(new_state.transport_pid, {:socket_close, self(), {:redirect, to}})
+      {:live, :redirect, %{to: _to} = opts} ->
+        send(new_state.transport_pid, {:socket_close, self(), {:redirect, opts}})
         {:live_redirect, copy_flash(new_state, Utils.get_flash(new_socket), opts), new_state}
 
       {:live, {params, action}, %{to: to} = opts} ->
@@ -276,18 +276,7 @@ defmodule Phoenix.LiveView.Channel do
 
     result =
       Diff.with_component(socket, cid, %{}, components, fn component_socket, component ->
-        case component.handle_event(event, val, component_socket) do
-          {:noreply, %Socket{redirected: redirected, assigns: assigns} = component_socket} ->
-            {component_socket, {redirected, assigns.flash}}
-
-          other ->
-            raise ArgumentError, """
-            invalid return from #{inspect(component)}.handle_event/3 callback.
-
-            Expected: {:noreply, %Socket{}}
-            Got: #{inspect(other)}
-            """
-        end
+        inner_component_handle_event(component_socket, component, event, val)
       end)
 
     # Due to race conditions, the browser can send a request for a
@@ -305,6 +294,38 @@ defmodule Phoenix.LiveView.Channel do
 
       :error ->
         {:noreply, push_noop(state, ref)}
+    end
+  end
+
+  defp inner_component_handle_event(component_socket, _component, "lv:clear-flash", val) do
+    component_socket =
+      case val do
+        %{"key" => key} -> Utils.clear_flash(component_socket, key)
+        _ -> Utils.clear_flash(component_socket)
+      end
+
+    {component_socket, {nil, %{}}}
+  end
+
+  defp inner_component_handle_event(_component_socket, _component, "lv:" <> _ = bad_event, _val) do
+    raise ArgumentError, """
+    received unknown LiveView event #{inspect(bad_event)}.
+    The following LiveView events are suppported: lv:clear-flash.
+    """
+  end
+
+  defp inner_component_handle_event(component_socket, component, event, val) do
+    case component.handle_event(event, val, component_socket) do
+      {:noreply, %Socket{redirected: redirected, assigns: assigns} = component_socket} ->
+        {component_socket, {redirected, assigns.flash}}
+
+      other ->
+        raise ArgumentError, """
+        invalid return from #{inspect(component)}.handle_event/3 callback.
+
+        Expected: {:noreply, %Socket{}}
+        Got: #{inspect(other)}
+        """
     end
   end
 
@@ -367,15 +388,15 @@ defmodule Phoenix.LiveView.Channel do
     root_pid = new_socket.root_pid
 
     case result do
-      {:redirect, %{to: to} = opts} ->
+      {:redirect, %{to: _to} = opts} ->
         new_state
         |> push_redirect(flash, opts, ref)
-        |> stop_shutdown_redirect(to)
+        |> stop_shutdown_redirect(opts)
 
-      {:live, :redirect, %{to: to} = opts} ->
+      {:live, :redirect, %{to: _to} = opts} ->
         new_state
         |> push_live_redirect(flash, opts, ref)
-        |> stop_shutdown_redirect(to)
+        |> stop_shutdown_redirect(opts)
 
       {:live, {params, action}, %{to: _to, kind: _kind} = opts} when root_pid == self() ->
         new_state
@@ -396,9 +417,9 @@ defmodule Phoenix.LiveView.Channel do
     end
   end
 
-  defp stop_shutdown_redirect(state, to) do
-    send(state.transport_pid, {:socket_close, self(), {:redirect, to}})
-    {:stop, {:shutdown, {:redirect, to}}, state}
+  defp stop_shutdown_redirect(state, opts) do
+    send(state.transport_pid, {:socket_close, self(), {:redirect, opts}})
+    {:stop, {:shutdown, {:redirect, opts}}, state}
   end
 
   defp drop_redirect(state) do

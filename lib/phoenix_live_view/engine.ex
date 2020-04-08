@@ -17,9 +17,36 @@ defmodule Phoenix.LiveView.Component do
 
   defimpl Phoenix.HTML.Safe do
     def to_iodata(%{id: id, component: component}) do
-      raise ArgumentError,
-            "cannot convert component #{inspect(component)} with id #{inspect(id)} to HTML. " <>
-              "A component must always be returned directly as part of a LiveView template"
+      raise ArgumentError, """
+      cannot convert component #{inspect(component)} with id #{inspect(id)} to HTML.
+
+      A component must always be returned directly as part of a LiveView template.
+
+      For example, this is not allowed:
+
+          <%= content_tag :div do %>
+            <%= live_component @socket, SomeComponent %>
+          <% end %>
+
+      That's because the component is inside `content_tag`. However, this works:
+
+          <div>
+            <%= live_component @socket, SomeComponent %>
+          </div>
+
+      Components are also allowed inside Elixir's special forms, such as
+      `if`, `for`, `case`, and friends. So while this does not work:
+
+          <%= Enum.map(items, fn item -> %>
+            <%= live_component @socket, SomeComponent, id: item %>
+          <% end %>
+
+      Since the component was given to `Enum.map/2`, this does:
+
+          <%= for item <- items do %>
+            <%= live_component @socket, SomeComponent, id: item %>
+          <% end %>
+      """
     end
   end
 end
@@ -259,6 +286,7 @@ defmodule Phoenix.LiveView.Engine do
   end
 
   @behaviour EEx.Engine
+  @assigns_var Macro.var(:assigns, nil)
 
   @impl true
   def init(_opts) do
@@ -380,8 +408,8 @@ defmodule Phoenix.LiveView.Engine do
   defp to_live_struct({:live_component, meta, [_ | _] = args} = expr, vars, assigns) do
     case Enum.split(args, -1) do
       {args, [[do: do_block]]} ->
-        {args, vars, assigns} = analyze_list(args, vars, assigns, [])
-        do_block = maybe_block_to_rendered(do_block, vars, assigns)
+        {args, vars, _} = analyze_list(args, vars, assigns, [])
+        do_block = maybe_block_to_rendered(do_block, vars)
         to_safe({:live_component, meta, args ++ [[do: do_block]]}, true)
 
       _ ->
@@ -389,12 +417,12 @@ defmodule Phoenix.LiveView.Engine do
     end
   end
 
-  defp to_live_struct({:for, _, [_ | _]} = expr, vars, assigns) do
+  defp to_live_struct({:for, _, [_ | _]} = expr, vars, _assigns) do
     with {:for, meta, [_ | _] = args} <- expr,
          {filters, [[do: {:__block__, _, block}]]} <- Enum.split(args, -1),
          {dynamic, [{:safe, static}]} <- Enum.split(block, -1) do
       {block, static, dynamic, fingerprint} =
-        analyze_static_and_dynamic(static, dynamic, taint_vars(vars), assigns)
+        analyze_static_and_dynamic(static, dynamic, taint_vars(vars), %{})
 
       for = {:for, meta, filters ++ [[do: {:__block__, [], block ++ [dynamic]}]]}
 
@@ -414,11 +442,11 @@ defmodule Phoenix.LiveView.Engine do
        when is_atom(macro) do
     if classify_taint(macro, args) == :live do
       {args, [opts]} = Enum.split(args, -1)
-      {args, vars, assigns} = analyze_list(args, vars, assigns, [])
+      {args, vars, _} = analyze_list(args, vars, assigns, [])
 
       opts =
         for {key, value} <- opts do
-          {key, maybe_block_to_rendered(value, vars, assigns)}
+          {key, maybe_block_to_rendered(value, vars)}
         end
 
       to_safe({macro, meta, args ++ [opts]}, true)
@@ -431,10 +459,10 @@ defmodule Phoenix.LiveView.Engine do
     to_safe(expr, true)
   end
 
-  defp maybe_block_to_rendered([{:->, _, _} | _] = blocks, vars, assigns) do
+  defp maybe_block_to_rendered([{:->, _, _} | _] = blocks, vars) do
     # First collect all vars across all assigns since cond/case may be linear
     {blocks, {vars, assigns}} =
-      Enum.map_reduce(blocks, {vars, assigns}, fn
+      Enum.map_reduce(blocks, {vars, %{}}, fn
         {:->, meta, [args, block]}, {vars, assigns} ->
           {args, vars, assigns} = analyze_list(args, vars, assigns, [])
           {{:->, meta, [args, block]}, {vars, assigns}}
@@ -442,12 +470,15 @@ defmodule Phoenix.LiveView.Engine do
 
     # Now convert blocks
     for {:->, meta, [args, block]} <- blocks do
-      {:->, meta, [args, maybe_block_to_rendered(block, vars, assigns)]}
+      case to_rendered_struct(block, vars, assigns) do
+        {:ok, rendered} -> {:->, meta, [args, rendered]}
+        :error -> {:->, meta, [args, block]}
+      end
     end
   end
 
-  defp maybe_block_to_rendered(block, vars, assigns) do
-    case to_rendered_struct(block, vars, assigns) do
+  defp maybe_block_to_rendered(block, vars) do
+    case to_rendered_struct(block, vars, %{}) do
       {:ok, rendered} -> rendered
       :error -> block
     end
@@ -457,7 +488,7 @@ defmodule Phoenix.LiveView.Engine do
     quote do: unquote(var) = unquote(live_struct)
   end
 
-  defp to_conditional_var([], var, live_struct) do
+  defp to_conditional_var(keys, var, live_struct) when keys == %{} do
     quote do
       unquote(var) =
         case changed do
@@ -478,12 +509,45 @@ defmodule Phoenix.LiveView.Engine do
   end
 
   defp changed_assigns(assigns) do
-    assigns
-    |> Enum.map(fn assign ->
-      quote do: unquote(__MODULE__).changed_assign?(changed, unquote(assign))
-    end)
-    |> Enum.reduce(&{:or, [], [&1, &2]})
+    checks =
+      for {key, _} <- assigns, not nested_and_parent_is_checked?(key, assigns) do
+        case key do
+          [assign] ->
+            quote do
+              unquote(__MODULE__).changed_assign?(changed, unquote(assign))
+            end
+
+          nested ->
+            quote do
+              unquote(__MODULE__).nested_changed_assign?(
+                unquote(@assigns_var),
+                changed,
+                unquote(nested)
+              )
+            end
+        end
+      end
+
+    Enum.reduce(checks, &{:or, [], [&1, &2]})
   end
+
+  # If we are accessing @foo.bar.baz but in the same place we also pass
+  # @foo.bar or @foo, we don't need to check for @foo.bar.baz.
+
+  # If there is no nesting, then we are not nesting.
+  defp nested_and_parent_is_checked?([_], _assigns),
+    do: false
+
+  # Otherwise, we convert @foo.bar.baz into [:baz, :bar, :foo], discard :baz,
+  # and then check if [:foo, :bar] and then [:foo] is in it.
+  defp nested_and_parent_is_checked?(keys, assigns),
+    do: parent_is_checked?(tl(Enum.reverse(keys)), assigns)
+
+  defp parent_is_checked?([], _assigns),
+    do: false
+
+  defp parent_is_checked?(rest, assigns),
+    do: Map.has_key?(assigns, Enum.reverse(rest)) or parent_is_checked?(tl(rest), assigns)
 
   ## Extracts binaries and variable from iodata
 
@@ -526,32 +590,60 @@ defmodule Phoenix.LiveView.Engine do
   defp analyze_and_return_tainted_keys(ast, vars, assigns) do
     {ast, vars, assigns} = analyze(ast, vars, assigns)
     {tainted_assigns?, assigns} = Map.pop(assigns, __MODULE__, false)
-    keys = if match?({:tainted, _}, vars) or tainted_assigns?, do: :all, else: Map.keys(assigns)
+    keys = if match?({:tainted, _}, vars) or tainted_assigns?, do: :all, else: assigns
     {ast, keys, vars}
   end
 
-  # Non-expanded assign access
-  defp analyze({:@, meta, [{name, _, context}]}, vars, assigns)
-       when is_atom(name) and is_atom(context) do
-    assigns_var = Macro.var(:assigns, nil)
+  # Nested assign
+  defp analyze_assign({{:., dot_meta, [left, right]}, meta, []}, vars, assigns, nest) do
+    {left, vars, assigns} = analyze_assign(left, vars, assigns, [right | nest])
+    {{{:., dot_meta, [left, right]}, meta, []}, vars, assigns}
+  end
 
+  # Non-expanded assign
+  defp analyze_assign({:@, meta, [{name, _, context}]}, vars, assigns, nest)
+       when is_atom(name) and is_atom(context) do
     expr =
       quote line: meta[:line] || 0 do
-        unquote(__MODULE__).fetch_assign!(unquote(assigns_var), unquote(name))
+        unquote(__MODULE__).fetch_assign!(unquote(@assigns_var), unquote(name))
       end
 
-    {expr, vars, Map.put(assigns, name, true)}
+    {expr, vars, Map.put(assigns, [name | nest], true)}
   end
 
   # Expanded assign access. The non-expanded form is handled on root,
   # then all further traversals happen on the expanded form
+  defp analyze_assign(
+         {{:., _, [__MODULE__, :fetch_assign!]}, _, [{:assigns, _, nil}, name]} = expr,
+         vars,
+         assigns,
+         nest
+       )
+       when is_atom(name) do
+    {expr, vars, Map.put(assigns, [name | nest], true)}
+  end
+
+  defp analyze_assign(expr, vars, assigns, _nest) do
+    analyze(expr, vars, assigns)
+  end
+
+  # Delegates to analyze assign
+  defp analyze({{:., _, [_, _]}, _, []} = expr, vars, assigns) do
+    analyze_assign(expr, vars, assigns, [])
+  end
+
+  defp analyze({:@, _, [{name, _, context}]} = expr, vars, assigns)
+       when is_atom(name) and is_atom(context) do
+    analyze_assign(expr, vars, assigns, [])
+  end
+
   defp analyze(
          {{:., _, [__MODULE__, :fetch_assign!]}, _, [{:assigns, _, nil}, name]} = expr,
          vars,
          assigns
        )
        when is_atom(name) do
-    {expr, vars, Map.put(assigns, name, true)}
+    analyze_assign(expr, vars, assigns, [])
   end
 
   # Assigns is a strong-taint
@@ -737,6 +829,27 @@ defmodule Phoenix.LiveView.Engine do
     end
   end
 
+  def nested_changed_assign?(assigns, changed, [head | _] = all) do
+    changed_assign?(changed, head) and recur_changed_assign?(assigns, changed, all)
+  end
+
+  defp recur_changed_assign?(assigns, changed, [head]) do
+    case {assigns, changed} do
+      {%{^head => value}, %{^head => value}} -> false
+      {_, _} -> true
+    end
+  end
+
+  defp recur_changed_assign?(assigns, changed, [head | tail]) do
+    case {assigns, changed} do
+      {%{^head => assigns_value}, %{^head => changed_value}} ->
+        recur_changed_assign?(assigns_value, changed_value, tail)
+
+      {_, _} ->
+        true
+    end
+  end
+
   @doc false
   def fetch_assign!(assigns, key) do
     case assigns do
@@ -758,9 +871,12 @@ defmodule Phoenix.LiveView.Engine do
 
   defp classify_taint(:case, [_, _]), do: :live
   defp classify_taint(:if, [_, _]), do: :live
+  defp classify_taint(:unless, [_, _]), do: :live
   defp classify_taint(:cond, [_]), do: :live
   defp classify_taint(:try, [_]), do: :live
   defp classify_taint(:receive, [_]), do: :live
+  defp classify_taint(:live_component, [_, _, [do: _]]), do: :live
+  defp classify_taint(:live_component, [_, _, _, [do: _]]), do: :live
 
   defp classify_taint(:alias, [_]), do: :always
   defp classify_taint(:import, [_]), do: :always
