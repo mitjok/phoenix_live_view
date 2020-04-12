@@ -6,7 +6,7 @@ defmodule Phoenix.LiveView.LiveViewTest do
 
   import Phoenix.LiveViewTest
   alias Phoenix.LiveView
-  alias Phoenix.LiveViewTest.{Endpoint, DOM, ClockLive, ClockControlsLive, LayoutView, NestedLive}
+  alias Phoenix.LiveViewTest.{Endpoint, DOM, ClockLive, ClockControlsLive, NestedLive}
 
   @endpoint Endpoint
   @moduletag :capture_log
@@ -114,7 +114,7 @@ defmodule Phoenix.LiveView.LiveViewTest do
         get(conn, "/redir?during=connected&kind=push_redirect&child_to=/thermo?from_child=true")
 
       assert html_response(conn, 200) =~ "child_content"
-      assert {:error, {:redirect, %{to: "/thermo?from_child=true"}}} = live(conn)
+      assert {:error, {:live_redirect, %{to: "/thermo?from_child=true"}}} = live(conn)
     end
 
     test "child push_patch when disconnected", %{conn: conn} do
@@ -239,12 +239,22 @@ defmodule Phoenix.LiveView.LiveViewTest do
              end)
     end
 
-    test "render_click with string value", %{conn: conn} do
-      {:ok, view, _} = live(conn, "/thermo")
-      assert render_click(view, :save, "22") =~ "The temp is: 22"
+    test "live render in widget-style", %{conn: conn} do
+      conn = get(conn, "/widget")
+      assert html_response(conn, 200) =~ ~r/WIDGET:[\S\s]*time: 12:00 NY/
     end
 
-    test "render_click with map value", %{conn: conn} do
+    test "live render with socket.assigns", %{conn: conn} do
+      assert_raise Plug.Conn.WrapperError,
+                   ~r/\(KeyError\) key :boom not found in: %Phoenix\.LiveView\.Socket\.AssignsNotInSocket\{\}/,
+                   fn ->
+                     live(conn, "/assigns-not-in-socket")
+                   end
+    end
+  end
+
+  describe "event rendering" do
+    test "render_click", %{conn: conn} do
       {:ok, view, _} = live(conn, "/thermo")
       assert render_click(view, :save, %{temp: 20}) =~ "The temp is: 20"
     end
@@ -285,15 +295,17 @@ defmodule Phoenix.LiveView.LiveViewTest do
     test "render_blur and render_focus", %{conn: conn} do
       {:ok, view, _} = live(conn, "/thermo")
       assert render(view) =~ "The temp is: 1", view.id
-      assert render_blur(view, :inactive, "Zzz") =~ "Tap to wake – Zzz"
-      assert render_focus(view, :active, "Hello!") =~ "Waking up – Hello!"
+      assert render_blur(view, :inactive, %{value: "Zzz"}) =~ "Tap to wake – Zzz"
+      assert render_focus(view, :active, %{value: "Hello!"}) =~ "Waking up – Hello!"
     end
 
     test "render_hook", %{conn: conn} do
       {:ok, view, _} = live(conn, "/thermo")
       assert render_hook(view, :save, %{temp: 20}) =~ "The temp is: 20"
     end
+  end
 
+  describe "container" do
     test "module DOM container", %{conn: conn} do
       conn =
         conn
@@ -353,19 +365,6 @@ defmodule Phoenix.LiveView.LiveViewTest do
 
       assert render(view) =~ ~r/<\/p>/
     end
-
-    test "widget style live_render", %{conn: conn} do
-      conn = get(conn, "/widget")
-      assert html_response(conn, 200) =~ ~r/WIDGET:[\S\s]*time: 12:00 NY/
-    end
-
-    test "socket.assigns while rendering", %{conn: conn} do
-      assert_raise Plug.Conn.WrapperError,
-                   ~r/\(KeyError\) key :boom not found in: %Phoenix\.LiveView\.Socket\.AssignsNotInSocket\{\}/,
-                   fn ->
-                     live(conn, "/assigns-not-in-socket")
-                   end
-    end
   end
 
   describe "messaging callbacks" do
@@ -398,7 +397,9 @@ defmodule Phoenix.LiveView.LiveViewTest do
                <button phx-click="inc">+</button>
                """)
 
-      assert DOM.child_nodes(hd(DOM.parse(render(view)))) ==
+      [{_, _, child_nodes} | _] = DOM.parse(render(view))
+
+      assert child_nodes ==
                DOM.parse("""
                Redirect: none\nThe temp is: 3
                <button phx-click="dec">-</button>
@@ -447,8 +448,8 @@ defmodule Phoenix.LiveView.LiveViewTest do
       assert render(thermo_view) =~ "time"
       assert render(thermo_view) =~ "snooze"
 
-      assert clock_view = find_child(thermo_view, "clock")
-      assert controls_view = find_child(clock_view, "NY-controls")
+      assert clock_view = find_live_child(thermo_view, "clock")
+      assert controls_view = find_live_child(clock_view, "NY-controls")
       assert clock_view.module == ClockLive
       assert controls_view.module == ClockControlsLive
 
@@ -467,6 +468,8 @@ defmodule Phoenix.LiveView.LiveViewTest do
 
     @tag session: %{nest: []}
     test "nested children are removed and killed", %{conn: conn} do
+      Process.flag(:trap_exit, true)
+
       html_without_nesting =
         DOM.parse("""
         Redirect: none\nThe temp is: 1
@@ -476,24 +479,20 @@ defmodule Phoenix.LiveView.LiveViewTest do
 
       {:ok, thermo_view, _} = live(conn, "/thermo")
 
-      assert clock_view = find_child(thermo_view, "clock")
-      assert controls_view = find_child(clock_view, "NY-controls")
-      refute render(thermo_view) == html_without_nesting
+      assert find_live_child(thermo_view, "clock")
+      refute DOM.child_nodes(hd(DOM.parse(render(thermo_view)))) == html_without_nesting
 
       GenServer.call(thermo_view.pid, {:set, :nest, false})
-      assert_remove(clock_view, {:shutdown, :removed})
-      assert_remove(controls_view, {:shutdown, :removed})
-      assert [{_, _, ^html_without_nesting}] = DOM.parse(render(thermo_view))
-
-      refute find_child(thermo_view, "clock")
+      assert DOM.child_nodes(hd(DOM.parse(render(thermo_view)))) == html_without_nesting
+      refute find_live_child(thermo_view, "clock")
     end
 
     @tag session: %{dup: false}
     test "multiple nested children of same module", %{conn: conn} do
       {:ok, parent, _} = live(conn, "/same-child")
-      assert tokyo = find_child(parent, "Tokyo")
-      assert madrid = find_child(parent, "Madrid")
-      assert toronto = find_child(parent, "Toronto")
+      assert tokyo = find_live_child(parent, "Tokyo")
+      assert madrid = find_live_child(parent, "Madrid")
+      assert toronto = find_live_child(parent, "Toronto")
       child_ids = for view <- [tokyo, madrid, toronto], do: view.id
 
       assert Enum.uniq(child_ids) == child_ids
@@ -506,91 +505,6 @@ defmodule Phoenix.LiveView.LiveViewTest do
     test "multiple nested children of same module with new session", %{conn: conn} do
       {:ok, parent, _} = live(conn, "/same-child")
       assert render_click(parent, :inc) =~ "Toronto"
-    end
-
-    @tag session: %{nest: []}
-    test "parent graceful exit removes children", %{conn: conn} do
-      {:ok, thermo_view, _} = live(conn, "/thermo")
-
-      assert clock_view = find_child(thermo_view, "clock")
-      assert controls_view = find_child(clock_view, "NY-controls")
-
-      stop(thermo_view)
-      assert_remove(thermo_view, {:shutdown, :stop})
-      assert_remove(clock_view, {:shutdown, :stop})
-      assert_remove(controls_view, {:shutdown, :stop})
-    end
-
-    @tag session: %{nest: []}
-    test "child level 1 graceful exit removes children", %{conn: conn} do
-      {:ok, thermo_view, _html} = live(conn, "/thermo")
-
-      assert clock_view = find_child(thermo_view, "clock")
-      assert controls_view = find_child(clock_view, "NY-controls")
-
-      stop(clock_view)
-      assert_remove(clock_view, {:shutdown, :stop})
-      assert_remove(controls_view, {:shutdown, :stop})
-
-      refute find_child(thermo_view, "clock")
-    end
-
-    @tag session: %{nest: []}
-    test "child level 2 graceful exit removes children", %{conn: conn} do
-      {:ok, thermo_view, _html} = live(conn, "/thermo")
-
-      assert clock_view = find_child(thermo_view, "clock")
-      assert controls_view = find_child(clock_view, "NY-controls")
-
-      stop(controls_view)
-      assert_remove(controls_view, {:shutdown, :stop})
-      assert find_child(thermo_view, "clock")
-      refute find_child(clock_view, "NY-controls")
-    end
-
-    @tag :capture_log
-    @tag session: %{nest: []}
-    test "abnormal parent exit removes children", %{conn: conn} do
-      {:ok, thermo_view, _html} = live(conn, "/thermo")
-
-      assert clock_view = find_child(thermo_view, "clock")
-      assert controls_view = find_child(clock_view, "NY-controls")
-
-      send(thermo_view.pid, :boom)
-
-      assert_remove(thermo_view, _)
-      assert_remove(clock_view, _)
-      assert_remove(controls_view, _)
-    end
-
-    @tag :capture_log
-    @tag session: %{nest: []}
-    test "abnormal child level 1 exit removes children", %{conn: conn} do
-      {:ok, thermo_view, _html} = live(conn, "/thermo")
-
-      assert clock_view = find_child(thermo_view, "clock")
-      assert controls_view = find_child(clock_view, "NY-controls")
-
-      send(clock_view.pid, :boom)
-
-      assert_remove(clock_view, _)
-      assert_remove(controls_view, _)
-      refute find_child(thermo_view, "clock")
-    end
-
-    @tag :capture_log
-    @tag session: %{nest: []}
-    test "abnormal child level 2 exit removes children", %{conn: conn} do
-      {:ok, thermo_view, _html} = live(conn, "/thermo")
-
-      assert clock_view = find_child(thermo_view, "clock")
-      assert controls_view = find_child(clock_view, "NY-controls")
-
-      send(controls_view.pid, :boom)
-
-      assert_remove(controls_view, _)
-      assert find_child(thermo_view, "clock")
-      refute find_child(clock_view, "NY-controls")
     end
 
     test "nested for comprehensions", %{conn: conn} do
@@ -622,7 +536,7 @@ defmodule Phoenix.LiveView.LiveViewTest do
       assert ExUnit.CaptureLog.capture_log(fn ->
                :ok = GenServer.call(view.pid, {:dynamic_child, :static})
                catch_exit(render(view))
-             end) =~ "duplicate LiveView id: \"static\""
+             end) =~ "expected selector \"#static\" to return a single element, but got 2"
     end
 
     test "live view nested inside a live component" do
@@ -634,7 +548,7 @@ defmodule Phoenix.LiveView.LiveViewTest do
       {:ok, thermo_view, html} = live(conn, "/thermo")
       assert html =~ "Redirect: none"
 
-      assert clock_view = find_child(thermo_view, "clock")
+      assert clock_view = find_live_child(thermo_view, "clock")
 
       send(
         clock_view.pid,
@@ -651,7 +565,7 @@ defmodule Phoenix.LiveView.LiveViewTest do
     test "push_patch", %{conn: conn} do
       {:ok, thermo_view, html} = live(conn, "/thermo")
       assert html =~ "Redirect: none"
-      assert clock_view = find_child(thermo_view, "clock")
+      assert clock_view = find_live_child(thermo_view, "clock")
 
       send(
         clock_view.pid,
@@ -661,7 +575,7 @@ defmodule Phoenix.LiveView.LiveViewTest do
          end}
       )
 
-      assert_redirect(thermo_view, "/thermo?redirect=patch")
+      assert_patch(thermo_view, "/thermo?redirect=patch")
       assert render(thermo_view) =~ "Redirect: patch"
     end
 
@@ -670,7 +584,7 @@ defmodule Phoenix.LiveView.LiveViewTest do
       {:ok, thermo_view, html} = live(conn, "/thermo")
       assert html =~ "Redirect: none"
 
-      assert clock_view = find_child(thermo_view, "clock")
+      assert clock_view = find_live_child(thermo_view, "clock")
 
       send(
         clock_view.pid,
@@ -681,87 +595,6 @@ defmodule Phoenix.LiveView.LiveViewTest do
       )
 
       assert_redirect(thermo_view, "/thermo?redirect=redirect")
-    end
-  end
-
-  describe "temporary assigns" do
-    test "can be configured with mount options", %{conn: conn} do
-      {:ok, conf_live, html} =
-        conn
-        |> put_session(:opts, temporary_assigns: [description: nil])
-        |> live("/opts")
-
-      assert html =~ "long description. canary"
-      assert render(conf_live) =~ "long description. canary"
-      socket = GenServer.call(conf_live.pid, {:exec, fn socket -> {:reply, socket, socket} end})
-
-      assert socket.assigns.description == nil
-      assert socket.assigns.canary == "canary"
-    end
-
-    test "raises with invalid options", %{conn: conn} do
-      assert_raise Plug.Conn.WrapperError,
-                   ~r/invalid option returned from Phoenix.LiveViewTest.OptsLive.mount\/3/,
-                   fn ->
-                     conn
-                     |> put_session(:opts, oops: [:description])
-                     |> live("/opts")
-                   end
-    end
-  end
-
-  describe "layout" do
-    test "uses dead layout from router", %{conn: conn} do
-      assert_raise Plug.Conn.WrapperError,
-                   ~r"\(UndefinedFunctionError\) function UnknownView.render/2",
-                   fn -> live(conn, "/bad_layout") end
-
-      {:ok, _, _} = live(conn, "/layout")
-    end
-
-    test "is picked from config on use", %{conn: conn} do
-      {:ok, view, html} = live(conn, "/layout")
-      assert html =~ ~r|^LAYOUT<div[^>]+>LIVELAYOUTSTART\-123\-The value is: 123\-LIVELAYOUTEND|
-
-      assert render_click(view, :double, "") ==
-               "LIVELAYOUTSTART-246-The value is: 246-LIVELAYOUTEND\n"
-    end
-
-    @tag session: %{live_layout: {LayoutView, "live-override.html"}}
-    test "is picked from config on mount when given a layout", %{conn: conn} do
-      {:ok, view, html} = live(conn, "/layout")
-
-      assert html =~
-               ~r|^LAYOUT<div[^>]+>LIVEOVERRIDESTART\-123\-The value is: 123\-LIVEOVERRIDEEND|
-
-      assert render_click(view, :double, "") ==
-               "LIVEOVERRIDESTART-246-The value is: 246-LIVEOVERRIDEEND\n"
-    end
-
-    @tag session: %{live_layout: false}
-    test "is picked from config on mount when given false", %{conn: conn} do
-      {:ok, view, html} = live(conn, "/layout")
-      assert html =~ "The value is: 123</div>"
-      assert render_click(view, :double, "") == "The value is: 246"
-    end
-
-    test "is not picked from config on use for child live views", %{conn: conn} do
-      assert get(conn, "/parent_layout") |> html_response(200) =~
-               "The value is: 123</div>"
-
-      {:ok, _view, html} = live(conn, "/parent_layout")
-      assert html =~ "The value is: 123</div>"
-    end
-
-    @tag session: %{live_layout: {LayoutView, "live-override.html"}}
-    test "is picked from config on mount even on child live views", %{conn: conn} do
-      assert get(conn, "/parent_layout") |> html_response(200) =~
-               ~r|<div[^>]+>LIVEOVERRIDESTART\-123\-The value is: 123\-LIVEOVERRIDEEND|
-
-      {:ok, _view, html} = live(conn, "/parent_layout")
-
-      assert html =~
-               ~r|<div[^>]+>LIVEOVERRIDESTART\-123\-The value is: 123\-LIVEOVERRIDEEND|
     end
   end
 

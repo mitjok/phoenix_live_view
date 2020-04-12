@@ -6,7 +6,6 @@ defmodule Phoenix.LiveView.UpdateTest do
   alias Phoenix.LiveViewTest.{Endpoint, DOM}
 
   @endpoint Endpoint
-  @moduletag :capture_log
 
   setup config do
     {:ok,
@@ -73,7 +72,7 @@ defmodule Phoenix.LiveView.UpdateTest do
              ] = find_time_zones(html, ["nested-append", "tokyo"])
 
       {:ok, view, _html} = live(conn)
-      assert nested_view = find_child(view, "tz-nested-append")
+      assert nested_view = find_live_child(view, "tz-nested-append")
 
       GenServer.call(nested_view.pid, {:append, ["item1"]})
       GenServer.call(nested_view.pid, {:append, ["item2"]})
@@ -160,9 +159,9 @@ defmodule Phoenix.LiveView.UpdateTest do
                {"div", _, ["time: 12:00 SF\n" | _]}
              ] = find_time_zones(html, ["ny", "sf"])
 
-      children_pids_before = for child <- children(view), do: child.pid
+      children_pids_before = for child <- live_children(view), do: child.pid
       html = render_click(view, :reverse)
-      children_pids_after = for child <- children(view), do: child.pid
+      children_pids_after = for child <- live_children(view), do: child.pid
 
       assert [
                {"div", _, ["time: 12:00 SF\n" | _]},

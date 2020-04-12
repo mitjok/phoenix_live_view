@@ -1,4 +1,35 @@
-## 0.11.1-dev
+# Changelog
+
+## 0.12.0-dev
+
+This version of LiveView comes with an overhaul of the testing module, more closely integrating your LiveView template with your LiveView events. For example, in previous versions, you could write this test:
+
+    render_click(live_view, "increment_by", %{by: 1})
+
+However, there is no guarantee that there is any element on the page with a `phx-click="increment"` attribute and `phx-value-by` set to 1. With LiveView 0.12.0, you can now write:
+
+    live_view
+    |> element("#term .buttons a", "Increment")
+    |> render_click()
+
+The new implementation will check there is a button at `#term .buttons a`, with "Increment" as text, validate that it has a "phx-click" attribute and automatically submit to it with all relevant `phx-value` entries. This brings us closer to integration/acceptance test frameworks without any of the overhead and complexities of running a headless browser.
+
+### Enhancements
+  - Add `assert_patch/3` and `assert_patched/2` for asserting on patches
+  - Add `follow_redirect/3` to automatically follow redirects from `render_*` events
+
+### Bug fixes
+  - Fix phx-target @myself targetting a sibling LiveView component with the same component ID
+  - Fix phx:page-loading-stop firing before the DOM patch has been performed
+
+### Backwards incompatible changes
+  - `Phoenix.LiveViewTest.children/1` has been renamed to `Phoenix.LiveViewTest.live_children/1`
+  - `Phoenix.LiveViewTest.find_child/2` has been renamed to `Phoenix.LiveViewTest.find_live_child/2`
+  - `Phoenix.LiveViewTest.assert_redirect/3` no longer matches on the flash, instead it returns the flash
+  - `Phoenix.LiveViewTest.assert_redirect/3` no longer matches on the patch redirects, use `assert_patch/3` instead
+  - `Phoenix.LiveViewTest.assert_remove/3` has been removed. If the LiveView crashes, it will cause the test to crash too
+
+## 0.11.1 (2020-04-08)
 
 ### Bug fixes
   - Fix readonly states failing to be undone after an empty diff
@@ -19,6 +50,7 @@
 
 ### Backwards incompatible changes
   - Remove socket.assigns during render to avoid change tracking bugs. If you were previously relying on passing `@socket` to functions then referencing socket assigns, pass the explicit assign instead to your functions from the template
+  - Removed `assets/css/live_view.css`. If you want to show a progress bar then in `app.css` replace `@import "../../../../deps/phoenix_live_view/assets/css/live_view.css";` with `@import "../node_modules/nprogress/nprogress.css";` and add `nprogress` to `assets/package.json`. Full details in the [Progress animation guide](https://hexdocs.pm/phoenix_live_view/0.11.0/installation.html#progress-animation)
 
 ### Bug fixes
   - Fix client issue with greater than two levels of LiveView nesting
@@ -39,7 +71,7 @@
 ### Backwards incompatible changes
   - Rename socket assign `@live_view_module` to `@live_module`
   - Rename socket assign `@live_view_action` to `@live_action`
-  - LiveView no longer uses the default app layout and `put_live_layout` is no longer supported. Instead, use `put_root_layout`. Note, however, that the layout given to `put_root_layout` must use `@inner_content` instead of `<%= render(@view_module, @view_template, assigns) %>` and that the root layout will also be used by regular views. Check the [Live Layouts](https://hexdocs.pm/phoenix_live_view/Phoenix.LiveView.html#module-live-layouts) section of the docs.
+  - LiveView no longer uses the default app layout and `put_live_layout` is no longer supported. Instead, use `put_root_layout`. Note, however, that the layout given to `put_root_layout` must use `@inner_content` instead of `<%= render(@view_module, @view_template, assigns) %>` and that the root layout will also be used by regular views. Check the [Live Layouts](https://hexdocs.pm/phoenix_live_view/0.10.0/Phoenix.LiveView.html#module-live-layouts) section of the docs.
 
 ### Bug fixes
   - Fix loading states causing nested LiveViews to be removed during live navigation

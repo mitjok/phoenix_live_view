@@ -295,7 +295,7 @@ defmodule Phoenix.LiveView do
       </div>
 
   If the `@user.name` changes but `@user.id` doesn't, then LiveView
-  will re-render only `@user.name` and it execute or resend `@user.id`
+  will re-render only `@user.name` and it will not execute or resend `@user.id`
   at all.
 
   The change tracking also works when rendering other templates as
@@ -538,10 +538,10 @@ defmodule Phoenix.LiveView do
 
   ### Key Events
 
-  The `onkeydown`, and `onkeyup` events are supported via
-  the `phx-keydown`, and `phx-keyup` bindings. When
-  pushed, the value sent to the server will contain all the client event
-  object's metadata. For example, pressing the Escape key looks like this:
+  The `onkeydown`, and `onkeyup` events are supported via the `phx-keydown`,
+  and `phx-keyup` bindings. When pushed, the value sent to the server will
+  contain all the client event object's metadata. For example, pressing the
+  Escape key looks like this:
 
       %{
         "altKey" => false, "code" => "Escape", "ctrlKey" => false, "key" => "Escape",
@@ -586,7 +586,7 @@ defmodule Phoenix.LiveView do
   the following events are supported:
 
     - `lv:clear-flash` – clears the flash when sent to the server. If a
-    `phx-value-key` is provided, the specific key will be removed from the flash.
+      `phx-value-key` is provided, the specific key will be removed from the flash.
 
   For example:
 
@@ -893,7 +893,7 @@ defmodule Phoenix.LiveView do
     * the live layout - this is the layout which wraps a LiveView and
       is rendered as part of the LiveView life-cycle
 
-  Overall, those layouts are found in `templates/layouts` with the
+  Overall, those layouts are found in `templates/layout` with the
   following names:
 
       * root.html.eex
@@ -1102,12 +1102,33 @@ defmodule Phoenix.LiveView do
     2. The last input with focus is restored (unless another input has received focus)
     3. Updates are patched to the DOM as usual
 
-  To handle latent form submissions, any HTML tag can be annotated with
+  To handle latent events, any HTML tag can be annotated with
   `phx-disable-with`, which swaps the element's `innerText` with the provided
-  value during form submission. For example, the following code would change
+  value during event submission. For example, the following code would change
   the "Save" button to "Saving...", and restore it to "Save" on acknowledgment:
 
       <button type="submit" phx-disable-with="Saving...">Save</button>
+
+  You may also take advantage of LiveView's CSS loading state classes to
+  swap our your form content while the form is submitting. For example,
+  with the following rules in your `app.css`:
+
+      .while-submitting { display: none; }
+      .inputs { display: block; }
+
+      .phx-submit-loading {
+        .while-submitting { display: block; }
+        .inputs { display: none; }
+      }
+
+  You can show and hide content with the following markup:
+
+      <form phx-change="update">
+        <div class="while-submitting">Please waiting while we save our content...</div>
+        <div class="inputs">
+          <input type="text" name="text" value="<%= @text %>">
+        </div>
+      </form>
 
   ### Form Recovery following crashes or disconnects
 
@@ -1256,6 +1277,28 @@ defmodule Phoenix.LiveView do
 
       let liveSocket = new LiveSocket("/live", Socket, {hooks: Hooks, ...})
       ...
+
+  The hook can push events to the LiveView by using the `pushEvent` function.
+  Communication with hook can be done by using data attributes on the container.
+  For example, to implement infinite scrolling, one might do:
+
+      <div id="infinite-scroll" phx-hook="InfiniteScroll" data-page="<%= @page %>" />
+
+  And then in the client:
+
+      Hooks.InfiniteScroll = {
+        page() { return this.el.dataset.page },
+        mounted(){
+          this.pending = this.page()
+          window.addEventListener("scroll", e => {
+            if(this.pending == this.page() && scrollAt() > 90){
+              this.pending = this.page() + 1
+              this.pushEvent("load-more", {})
+            }
+          })
+        },
+        updated(){ this.pending = this.page() }
+      }
 
   *Note*: when using `phx-hook`, a unique DOM ID must always be set.
 

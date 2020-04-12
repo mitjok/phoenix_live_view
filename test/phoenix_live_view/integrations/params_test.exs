@@ -1,5 +1,5 @@
 defmodule Phoenix.LiveView.ParamsTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
   use Phoenix.ConnTest
 
   import Phoenix.LiveViewTest
@@ -8,7 +8,6 @@ defmodule Phoenix.LiveView.ParamsTest do
   alias Phoenix.LiveViewTest.Endpoint
 
   @endpoint Endpoint
-  @moduletag :capture_log
 
   setup do
     conn =
@@ -185,10 +184,10 @@ defmodule Phoenix.LiveView.ParamsTest do
     test "from event callback ack", %{conn: conn} do
       {:ok, counter_live, _html} = live(conn, "/counter/123")
 
-      assert render_click(counter_live, :push_patch, "/counter/123?from=event_ack") =~
+      assert render_click(counter_live, :push_patch, %{to: "/counter/123?from=event_ack"}) =~
                escape(~s|%{"from" => "event_ack", "id" => "123"}|)
 
-      assert_redirect(counter_live, "/counter/123?from=event_ack")
+      assert_patch(counter_live, "/counter/123?from=event_ack")
     end
 
     test "from handle_info", %{conn: conn} do
@@ -246,11 +245,9 @@ defmodule Phoenix.LiveView.ParamsTest do
       {:ok, counter_live, _html} = live(conn, "/counter/123")
 
       assert {:error, {:live_redirect, %{to: "/thermo/123"}}} =
-               render_click(counter_live, :push_redirect, "/thermo/123")
+               render_click(counter_live, :push_redirect, %{to: "/thermo/123"})
 
       assert_redirect(counter_live, "/thermo/123")
-
-      assert_remove(counter_live, {:redirect, %{to: "/thermo/123"}})
     end
 
     test "from handle_params", %{conn: conn} do
@@ -269,8 +266,6 @@ defmodule Phoenix.LiveView.ParamsTest do
 
       assert_receive {:handle_params, "http://localhost:4000/counter/123?from=handle_params",
                       %{val: 1}, %{"from" => "handle_params", "id" => "123"}}
-
-      assert_remove(counter_live, {:redirect, %{to: "/thermo/123"}})
     end
 
     test "shuts down with push_redirect", %{conn: conn} do
@@ -280,7 +275,7 @@ defmodule Phoenix.LiveView.ParamsTest do
         {:noreply, LiveView.push_redirect(socket, to: "/thermo/123")}
       end
 
-      assert {{:shutdown, {:redirect, %{to: "/thermo/123"}}}, _} =
+      assert {{:shutdown, {:live_redirect, %{to: "/thermo/123"}}}, _} =
                catch_exit(GenServer.call(counter_live.pid, {:push_redirect, next}))
     end
   end

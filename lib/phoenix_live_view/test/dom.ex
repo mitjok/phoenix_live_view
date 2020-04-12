@@ -6,40 +6,66 @@ defmodule Phoenix.LiveViewTest.DOM do
   @dynamics :d
   @components :c
 
-  def by_id!(html_tree, id) do
-    by_id(html_tree, id) || raise ArgumentError, "could not find ID #{inspect(id)} in the DOM"
-  end
+  def ensure_loaded! do
+    unless Code.ensure_loaded?(Floki) do
+      raise """
+      Phoenix LiveView requires Floki as a test dependency.
+      Please add to your mix.exs:
 
-  def cid_by_selector(rendered, selector) do
-    with [node | _] <- Floki.find(render_diff(rendered), selector),
-         [cid] <- all_attributes(node, @phx_component) do
-      String.to_integer(cid)
-    else
-      _ -> nil
+      {:floki, ">= 0.0.0", only: :test}
+      """
     end
   end
-
-  def all(html_tree, selector), do: Floki.find(html_tree, selector)
 
   def parse(html) do
     {:ok, parsed} = Floki.parse_document(html)
     parsed
   end
 
-  def attrs({_tag, attrs, _children}), do: Enum.into(attrs, %{})
-  def attrs({_tag, attrs, _children}, key), do: Enum.into(attrs, %{})[key]
+  def all(html_tree, selector), do: Floki.find(html_tree, selector)
+
+  def maybe_one(html_tree, selector, type \\ :selector) do
+    case all(html_tree, selector) do
+      [node] ->
+        {:ok, node}
+
+      [] ->
+        {:error, :none,
+         "expected #{type} #{inspect(selector)} to return a single element, but got none"}
+
+      many ->
+        {:error, :many,
+         "expected #{type} #{inspect(selector)} to return a single element, " <>
+           "but got #{length(many)}"}
+    end
+  end
 
   def all_attributes(html_tree, name), do: Floki.attribute(html_tree, name)
 
+  def all_values({_, attributes, _}) do
+    for {attr, value} <- attributes, key = value_key(attr), do: {key, value}, into: %{}
+  end
+
+  defp value_key("phx-value-" <> key), do: key
+  defp value_key("value"), do: "value"
+  defp value_key(_), do: nil
+
   def to_html(html_tree), do: Floki.raw_html(html_tree)
 
-  def filter_out(html_tree, selector), do: Floki.filter_out(html_tree, selector)
+  def to_text(html_tree), do: Floki.text(html_tree)
 
-  def child_nodes({_, _, children}), do: children
+  def by_id!(html_tree, id) do
+    case maybe_one(html_tree, "#" <> id) do
+      {:ok, node} -> node
+      {:error, _, message} -> raise message
+    end
+  end
 
-  def inner_html(html, id), do: html |> by_id!(id) |> child_nodes()
+  def child_nodes({_, _, nodes}), do: nodes
 
-  def find(html, selector), do: Floki.find(html, selector)
+  def inner_html!(html, id), do: html |> by_id!(id) |> child_nodes()
+
+  def component_id(html_tree), do: Floki.attribute(html_tree, @phx_component) |> List.first()
 
   def find_static_views(html) do
     html
@@ -136,7 +162,7 @@ defmodule Phoenix.LiveViewTest.DOM do
   # Patching
 
   def patch_id(id, html, inner_html) do
-    cids_before = find_component_ids(id, html)
+    cids_before = inner_component_ids(id, html)
 
     phx_update_tree =
       walk(inner_html, fn node ->
@@ -152,31 +178,12 @@ defmodule Phoenix.LiveViewTest.DOM do
         end
       end)
 
-    cids_after = find_component_ids(id, new_html)
+    cids_after = inner_component_ids(id, new_html)
     deleted_cids = for cid <- cids_before -- cids_after, do: String.to_integer(cid)
-
-    deleted_ids =
-      html
-      |> all(Enum.join(Enum.map(deleted_cids, &"[#{@phx_component}=\"#{&1}\"]"), ", "))
-      |> all_attributes("id")
-
-    {new_html, deleted_cids, deleted_ids}
+    {new_html, deleted_cids}
   end
 
-  defp walk(html_tree, fun) when is_function(fun, 1) do
-    Floki.traverse_and_update(html_tree, walk_fun(fun))
-  end
-
-  defp walk_fun(fun) when is_function(fun, 1) do
-    fn
-      {:pi, _, _} = xml -> xml
-      {:comment, _children} = comment -> comment
-      {:doctype, _, _, _} = doctype -> doctype
-      {_tag, _attrs, _children} = node -> fun.(node)
-    end
-  end
-
-  defp find_component_ids(id, html) do
+  defp inner_component_ids(id, html) do
     html
     |> by_id!(id)
     |> all("[#{@phx_component}]")
@@ -185,7 +192,7 @@ defmodule Phoenix.LiveViewTest.DOM do
 
   defp apply_phx_update(type, html, {tag, attrs, appended_children} = node)
        when type in ["append", "prepend"] do
-    children_before = phx_update_children(html, attrs(node, "id"), appended_children)
+    children_before = apply_phx_update_children(html, attrs(node, "id"), appended_children)
     existing_ids = all_attributes(children_before, "id")
     new_ids = all_attributes(appended_children, "id")
     content_changed? = new_ids !== existing_ids
@@ -202,12 +209,12 @@ defmodule Phoenix.LiveViewTest.DOM do
         patched_before =
           walk(before, fn {tag, attrs, _} = node ->
             cond do
-              attrs(node, "id") == dup_id -> {tag, attrs, inner_html(appended, dup_id)}
+              attrs(node, "id") == dup_id -> {tag, attrs, inner_html!(appended, dup_id)}
               true -> node
             end
           end)
 
-        {patched_before, filter_out(appended, "##{dup_id}")}
+        {patched_before, Floki.filter_out(appended, "##{dup_id}")}
       end)
 
     cond do
@@ -235,7 +242,7 @@ defmodule Phoenix.LiveViewTest.DOM do
     """
   end
 
-  def phx_update_children(html, id, appended_children) do
+  defp apply_phx_update_children(html, id, appended_children) do
     case by_id(html, id) do
       {_, _, children_before} ->
         children_before
@@ -249,10 +256,25 @@ defmodule Phoenix.LiveViewTest.DOM do
     end
   end
 
-  defp by_id(html_tree, id) do
-    case Floki.find(html_tree, "##{id}") do
-      [node | _] -> node
-      [] -> nil
+  ## Helpers
+
+  defp walk(html_tree, fun) when is_function(fun, 1) do
+    Floki.traverse_and_update(html_tree, walk_fun(fun))
+  end
+
+  defp walk_fun(fun) when is_function(fun, 1) do
+    fn
+      {:pi, _, _} = xml -> xml
+      {:comment, _children} = comment -> comment
+      {:doctype, _, _, _} = doctype -> doctype
+      {_tag, _attrs, _children} = node -> fun.(node)
     end
   end
+
+  defp by_id(html_tree, id) do
+    html_tree |> Floki.find("##{id}") |> List.first()
+  end
+
+  defp attrs({_tag, attrs, _children}), do: Enum.into(attrs, %{})
+  defp attrs({_tag, attrs, _children}, key), do: Enum.into(attrs, %{})[key]
 end

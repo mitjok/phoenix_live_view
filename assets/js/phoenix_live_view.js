@@ -502,9 +502,9 @@ export class LiveSocket {
     if(view){ callback(view) }
   }
 
-  withinTargets(phxTarget, callback){
+  withinTargets(el, phxTarget, callback){
     if(/^(0|[1-9](\d?)+)$/.test(phxTarget)){
-      let myselfTarget = DOM.findFirstComponentNode(document, phxTarget)
+      let myselfTarget = el
       if(!myselfTarget){ throw new Error(`no phx-target's found matching @myself of ${phxTarget}`) }
       this.owner(myselfTarget , view => callback(view, myselfTarget))
     } else {
@@ -521,7 +521,7 @@ export class LiveSocket {
     if(phxTarget === null){
       this.owner(childEl, view => callback(view, childEl))
     } else {
-      this.withinTargets(phxTarget, callback)
+      this.withinTargets(childEl, phxTarget, callback)
     }
   }
 
@@ -1392,6 +1392,7 @@ export class View {
     this.joinPending = true
     this.destroyed = false
     this.joinCallback = function(){}
+    this.stopCallback = function(){}
     this.pendingJoinOps = this.parent ? null : []
     this.viewHooks = {}
     this.children = this.parent ? null : {}
@@ -1523,7 +1524,6 @@ export class View {
 
   onJoinComplete({live_patch}, html){
     if(this.joinCount > 1 || (this.parent && !this.parent.isJoinPending())){
-      if(this.isMain()){ DOM.dispatchEvent(window, "phx:page-loading-stop", {to: this.href, kind: "rejoin"}) }
       return this.applyJoinPatch(live_patch, html)
     }
 
@@ -1566,6 +1566,7 @@ export class View {
     }
     this.hideLoader()
     if(this.joinCount > 1){ this.triggerReconnected() }
+    this.stopCallback()
   }
 
   performPatch(patch){
@@ -1801,15 +1802,10 @@ export class View {
   hasGracefullyClosed(){ return this.gracefullyClosed }
 
   join(callback){
-    if(this.parent){
-      this.joinCallback = () => callback && callback(this, this.joinCount)
-    } else {
-      let stopLoading = this.liveSocket.withPageLoading({to: this.href, kind: "initial"})
-      this.joinCallback = () => {
-        stopLoading()
-        callback && callback(this, this.joinCount)
-      }
+    if(!this.parent){
+      this.stopCallback = this.liveSocket.withPageLoading({to: this.href, kind: "initial"})
     }
+    this.joinCallback = () => callback && callback(this, this.joinCount)
     this.liveSocket.wrapPush(() => {
       return this.channel.join()
         .receive("ok", data => this.onJoin(data))
@@ -2069,7 +2065,7 @@ class ViewHook {
   }
 
   pushEventTo(phxTarget, event, payload = {}){
-    this.__liveSocket.withinTargets(phxTarget, (view, targetCtx) => {
+    this.__liveSocket.withinTargets(null, phxTarget, (view, targetCtx) => {
       view.pushHookEvent(targetCtx, event, payload)
     })
   }
