@@ -37,14 +37,13 @@ defmodule Phoenix.LiveView.Channel do
     e -> reraise(e, __STACKTRACE__)
   end
 
-  def handle_info({:DOWN, _, _, transport_pid, reason}, %{transport_pid: transport_pid} = state) do
-    reason = if reason == :normal, do: {:shutdown, :closed}, else: reason
-    {:stop, reason, state}
+  def handle_info({:DOWN, _, _, transport_pid, _reason}, %{transport_pid: transport_pid} = state) do
+    {:stop, {:shutdown, :closed}, state}
   end
 
   def handle_info({:DOWN, _, _, parent, reason}, %{socket: %{parent_pid: parent}} = state) do
     send(state.transport_pid, {:socket_close, self(), reason})
-    {:stop, reason, state}
+    {:stop, {:shutdown, :parent_exited}, state}
   end
 
   def handle_info(%Message{topic: topic, event: "phx_leave"} = msg, %{topic: topic} = state) do
@@ -181,7 +180,7 @@ defmodule Phoenix.LiveView.Channel do
   defp view_handle_event(%Socket{}, "lv:" <> _ = bad_event, _val) do
     raise ArgumentError, """
     received unknown LiveView event #{inspect(bad_event)}.
-    The following LiveView events are suppported: lv:clear-flash.
+    The following LiveView events are supported: lv:clear-flash.
     """
   end
 
@@ -307,7 +306,7 @@ defmodule Phoenix.LiveView.Channel do
   defp inner_component_handle_event(_component_socket, _component, "lv:" <> _ = bad_event, _val) do
     raise ArgumentError, """
     received unknown LiveView event #{inspect(bad_event)}.
-    The following LiveView events are suppported: lv:clear-flash.
+    The following LiveView events are supported: lv:clear-flash.
     """
   end
 
@@ -569,8 +568,11 @@ defmodule Phoenix.LiveView.Channel do
       assign_new: assign_new
     } = verified
 
-    # Optional verified parts
-    router = verified[:router]
+    # Make sure the view is loaded. Otherwise if the first request
+    # ever is a LiveView connection, the view won't be loaded and
+    # the mount/handle_params callbacks won't be invoked as they
+    # are optional, leading to errors.
+    view.__live__()
 
     %Phoenix.Socket{
       endpoint: endpoint,
@@ -578,6 +580,8 @@ defmodule Phoenix.LiveView.Channel do
       transport_pid: transport_pid
     } = phx_socket
 
+    # Optional verified parts
+    router = verified[:router]
     flash = verify_flash(endpoint, verified, params)
 
     Process.monitor(transport_pid)

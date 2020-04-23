@@ -29,12 +29,14 @@ const PHX_REMOVE = "data-phx-remove"
 const PHX_PAGE_LOADING = "page-loading"
 const PHX_CONNECTED_CLASS = "phx-connected"
 const PHX_DISCONNECTED_CLASS = "phx-disconnected"
+const PHX_NO_FEEDBACK_CLASS = "phx-no-feedback"
 const PHX_ERROR_CLASS = "phx-error"
 const PHX_PARENT_ID = "data-phx-parent-id"
 const PHX_VIEW_SELECTOR = `[${PHX_VIEW}]`
 const PHX_MAIN = `data-phx-main`
 const PHX_ROOT_ID = `data-phx-root-id`
-const PHX_ERROR_FOR = "data-phx-error-for"
+const PHX_TRIGGER_ACTION = "trigger-action"
+const PHX_FEEDBACK_FOR = "feedback-for"
 const PHX_HAS_FOCUSED = "phx-has-focused"
 const FOCUSABLE_INPUTS = ["text", "textarea", "number", "email", "password", "search", "tel", "url", "date", "time"]
 const CHECKABLE_INPUTS = ["checkbox", "radio"]
@@ -44,6 +46,7 @@ const PHX_STATIC = "data-phx-static"
 const PHX_READONLY = "data-phx-readonly"
 const PHX_DISABLED = "data-phx-disabled"
 const PHX_DISABLE_WITH = "disable-with"
+const PHX_DISABLE_WITH_RESTORE = "data-phx-disable-with-restore"
 const PHX_HOOK = "hook"
 const PHX_DEBOUNCE = "debounce"
 const PHX_THROTTLE = "throttle"
@@ -68,10 +71,12 @@ const DEFAULTS = {
   debounce: 300,
   throttle: 300
 }
+
 // Rendered
 const DYNAMICS = "d"
 const STATIC = "s"
 const COMPONENTS = "c"
+
 
 let logError = (msg, obj) => console.error && console.error(msg, obj)
 
@@ -128,58 +133,69 @@ let serializeForm = (form, meta = {}) => {
   return params.toString()
 }
 
-let recursiveMerge = (target, source) => {
-  for(let key in source){
-    let val = source[key]
-    let targetVal = target[key]
-    if(isObject(val) && isObject(targetVal)){
-      if(targetVal[DYNAMICS] && !val[DYNAMICS]){ delete targetVal[DYNAMICS] }
-      recursiveMerge(targetVal, val)
-    } else {
-      target[key] = val
-    }
+export class Rendered {
+  constructor(viewId, rendered){
+    this.viewId = viewId
+    this.replaceRendered(rendered)
   }
-}
 
-export let Rendered = {
-  build(rendered){
-    rendered[COMPONENTS] = rendered[COMPONENTS] || {}
-    return rendered
-  },
+  parentViewId(){ return this.viewId }
 
-  toString(rendered, components = rendered[COMPONENTS] || {}, onlyCids){
+  toString(onlyCids){
+    return this.recursiveToString(this.rendered, this.rendered[COMPONENTS], onlyCids)
+  }
+
+  recursiveToString(rendered, components = rendered[COMPONENTS] || {}, onlyCids){
     onlyCids = onlyCids ? new Set(onlyCids) : null
     let output = {buffer: "", components: components, onlyCids: onlyCids}
     this.toOutputBuffer(rendered, output)
     return output.buffer
-  },
+  }
 
-  componentCIDs(diff){ return Object.keys(diff[COMPONENTS] || {}).map(i => parseInt(i)) },
+  componentCIDs(diff){ return Object.keys(diff[COMPONENTS] || {}).map(i => parseInt(i)) }
 
   isComponentOnlyDiff(diff){
     if(!diff[COMPONENTS]){ return false }
     return Object.keys(diff).filter(k => k !== "title" && k !== COMPONENTS).length === 0
-  },
+  }
 
-  mergeDiff(source, diff){
+  mergeDiff(diff){
     if(!diff[COMPONENTS] && this.isNewFingerprint(diff)){
-      return this.build(diff)
+      this.replaceRendered(diff)
     } else {
-      recursiveMerge(source, diff)
-      return source
+      this.recursiveMerge(this.rendered, diff)
     }
-  },
+  }
 
-  componentToString(rendered, cid){ return this.recursiveCIDToString(rendered[COMPONENTS], cid)},
+  recursiveMerge(target, source){
+    for(let key in source){
+      let val = source[key]
+      let targetVal = target[key]
+      if(isObject(val) && isObject(targetVal)){
+        if(targetVal[DYNAMICS] && !val[DYNAMICS]){ delete targetVal[DYNAMICS] }
+        this.recursiveMerge(targetVal, val)
+      } else {
+        target[key] = val
+      }
+    }
+  }
 
-  pruneCIDs(rendered, cids){
-    cids.forEach(cid => delete rendered[COMPONENTS][cid])
-    return rendered
-  },
+  componentToString(cid){ return this.recursiveCIDToString(this.rendered[COMPONENTS], cid) }
+
+  pruneCIDs(cids){
+    cids.forEach(cid => delete this.rendered[COMPONENTS][cid])
+  }
 
   // private
 
-  isNewFingerprint(diff = {}){ return !!diff[STATIC] },
+  get(){ return this.rendered }
+
+  replaceRendered(rendered){
+    this.rendered = rendered
+    this.rendered[COMPONENTS] = this.rendered[COMPONENTS] || {}
+  }
+
+  isNewFingerprint(diff = {}){ return !!diff[STATIC] }
 
   toOutputBuffer(rendered, output){
     if(rendered[DYNAMICS]){ return this.comprehensionToBuffer(rendered, output) }
@@ -190,7 +206,7 @@ export let Rendered = {
       this.dynamicToBuffer(rendered[i - 1], output)
       output.buffer += statics[i]
     }
-  },
+  }
 
   comprehensionToBuffer(rendered, output){
     let {[DYNAMICS]: dynamics, [STATIC]: statics} = rendered
@@ -203,7 +219,7 @@ export let Rendered = {
         output.buffer += statics[i]
       }
     }
-  },
+  }
 
   dynamicToBuffer(rendered, output){
     if(typeof(rendered) === "number"){
@@ -213,17 +229,18 @@ export let Rendered = {
     } else {
       output.buffer += rendered
     }
-  },
+  }
 
   recursiveCIDToString(components, cid, onlyCids){
     let component = components[cid] || logError(`no component for CID ${cid}`, components)
     let template = document.createElement("template")
-    template.innerHTML = this.toString(component, components, onlyCids)
+    template.innerHTML = this.recursiveToString(component, components, onlyCids)
     let container = template.content
     let skip = onlyCids && !onlyCids.has(cid)
-    Array.from(container.childNodes).forEach(child => {
+    Array.from(container.childNodes).forEach((child, i) => {
       if(child.nodeType === Node.ELEMENT_NODE){
         child.setAttribute(PHX_COMPONENT, cid)
+        if(!child.id){ child.id = `${this.parentViewId()}-${cid}-${i}`}
         if(skip){
           child.setAttribute(PHX_SKIP, "")
           child.innerHTML = ""
@@ -458,7 +475,7 @@ export class LiveSocket {
   }
 
   redirect(to, flash){
-    this.unloaded = true
+    this.disconnect()
     Browser.redirect(to, flash)
   }
 
@@ -1040,13 +1057,13 @@ export let DOM = {
     }
   },
 
-  discardError(container, el){
-    let field = el.getAttribute && el.getAttribute(PHX_ERROR_FOR)
+  discardError(container, el, phxFeedbackFor){
+    let field = el.getAttribute && el.getAttribute(phxFeedbackFor)
     let input = field && container.querySelector(`#${field}`)
     if(!input){ return }
 
     if(!(this.private(input, PHX_HAS_FOCUSED) || this.private(input.form, PHX_HAS_SUBMITTED))){
-      el.style.display = "none"
+      el.classList.add(PHX_NO_FEEDBACK_CLASS)
     }
   },
 
@@ -1111,7 +1128,56 @@ export let DOM = {
     }
   },
 
-  isTextualInput(el){ return FOCUSABLE_INPUTS.indexOf(el.type) >= 0 }
+  isTextualInput(el){ return FOCUSABLE_INPUTS.indexOf(el.type) >= 0 },
+
+  isNowTriggerFormExternal(el, phxTriggerExternal){
+    return el.getAttribute && el.getAttribute(phxTriggerExternal) !== null
+  },
+
+  undoRefs(ref, container){
+    DOM.all(container, `[${PHX_REF}]`, el => this.syncPendingRef(ref, el, el))
+  },
+
+  syncPendingRef(ref, fromEl, toEl){
+    let fromRefAttr = fromEl.getAttribute && fromEl.getAttribute(PHX_REF)
+    if(fromRefAttr === null){ return true }
+
+    let fromRef = parseInt(fromRefAttr)
+    if(ref !== null && ref >= fromRef){
+      [fromEl, toEl].forEach(el => {
+        // remove refs
+        el.removeAttribute(PHX_REF)
+        // retore inputs
+        if(el.getAttribute(PHX_READONLY) !== null){
+          el.readOnly = false
+          el.removeAttribute(PHX_READONLY)
+        }
+        if(el.getAttribute(PHX_DISABLED) !== null){
+          el.disabled = false
+          el.removeAttribute(PHX_DISABLED)
+        }
+        // remove classes
+        PHX_EVENT_CLASSES.forEach(className => DOM.removeClass(el, className))
+        // restore disables
+        let disableRestore = el.getAttribute(PHX_DISABLE_WITH_RESTORE)
+        if(disableRestore !== null){
+          el.innerText = disableRestore
+          el.removeAttribute(PHX_DISABLE_WITH_RESTORE)
+        }
+      })
+      return true
+    } else {
+      PHX_EVENT_CLASSES.forEach(className => {
+        fromEl.classList.contains(className) && toEl.classList.add(className)
+      })
+      toEl.setAttribute(PHX_REF, fromEl.getAttribute(PHX_REF))
+      if(DOM.isFormInput(fromEl) || /submit/i.test(fromEl.type)){
+        return false
+      } else {
+        return true
+      }
+    }
+  }
 }
 
 class DOMPatch {
@@ -1142,10 +1208,6 @@ class DOMPatch {
     this.callbacks[`after${kind}`].forEach(callback => callback(...args))
   }
 
-  undoRefs(){
-    DOM.all(this.container, `[${PHX_REF}]`, el => this.syncPendingRef(el, el))
-  }
-
   markPrunableContentForRemoval(){
     DOM.all(this.container, `[phx-update=append] > *, [phx-update=prepend] > *`, el => {
       el.setAttribute(PHX_REMOVE, "")
@@ -1160,10 +1222,11 @@ class DOMPatch {
     let focused = liveSocket.getActiveElement()
     let {selectionStart, selectionEnd} = focused && DOM.isTextualInput(focused) ? focused : {}
     let phxUpdate = liveSocket.binding(PHX_UPDATE)
+    let phxFeedbackFor = liveSocket.binding(PHX_FEEDBACK_FOR)
+    let phxTriggerExternal = liveSocket.binding(PHX_TRIGGER_ACTION)
     let added = []
     let updates = []
     let appendPrependUpdates = []
-    let onUpdated = []
 
     let diffHTML = liveSocket.time("premorph container prep", () => {
       return this.buildDiffHTML(container, html, phxUpdate, targetContainer)
@@ -1177,11 +1240,12 @@ class DOMPatch {
         childrenOnly: targetContainer.getAttribute(PHX_COMPONENT) === null,
         onBeforeNodeAdded: (el) => {
           //input handling
-          DOM.discardError(targetContainer, el)
+          DOM.discardError(targetContainer, el, phxFeedbackFor)
           this.trackBefore("added", el)
           return el
         },
         onNodeAdded: (el) => {
+          if(DOM.isNowTriggerFormExternal(el, phxTriggerExternal)){ el.submit() }
           // nested view handling
           if(DOM.isPhxChild(el) && view.ownsElement(el)){
             this.trackAfter("phxChildAdded", el)
@@ -1201,8 +1265,7 @@ class DOMPatch {
           }
         },
         onElUpdated: (el) => {
-          let callback = el.id && onUpdated[el.id]
-          callback && callback(el)
+          if(DOM.isNowTriggerFormExternal(el, phxTriggerExternal)){ el.submit() }
           updates.push(el)
         },
         onBeforeElUpdated: (fromEl, toEl) => {
@@ -1214,7 +1277,7 @@ class DOMPatch {
             return false
           }
           if(fromEl.type === "number" && (fromEl.validity && fromEl.validity.badInput)){ return false }
-          if(!this.syncPendingRef(fromEl, toEl)){ return false }
+          if(!DOM.syncPendingRef(this.ref, fromEl, toEl)){ return false }
 
           // nested view handling
           if(DOM.isPhxChild(toEl)){
@@ -1227,7 +1290,7 @@ class DOMPatch {
 
           // input handling
           DOM.copyPrivates(toEl, fromEl)
-          DOM.discardError(targetContainer, toEl)
+          DOM.discardError(targetContainer, toEl, phxFeedbackFor)
 
           let isFocusedFormEl = focused && fromEl.isSameNode(focused) && DOM.isFormInput(fromEl)
           if(isFocusedFormEl && !this.forceFocusedSelectUpdate(fromEl, toEl)){
@@ -1249,11 +1312,9 @@ class DOMPatch {
               let isAppend = toEl.getAttribute(phxUpdate) === "append"
               let idsBefore = Array.from(fromEl.children).map(child => child.id)
               let newIds = Array.from(toEl.children).map(child => child.id)
-              onUpdated[toEl.id] = (el) => DOM.putPrivate(el, "prev-new", newIds)
-              let prevNew = DOM.private(fromEl, "prev-new") || []
               let isOnlyNewIds = isAppend && !newIds.find(id => idsBefore.indexOf(id) >= 0)
 
-              if(!(isOnlyNewIds || prevNew.toString() === newIds.toString())){
+              if(!isOnlyNewIds){
                 appendPrependUpdates.push([toEl.id, idsBefore])
               }
             }
@@ -1300,7 +1361,6 @@ class DOMPatch {
   isCIDPatch(){ return this.cidPatch }
 
   skipCIDSibling(el){
-    // if(!this.isCIDPatch()){ return false }
     return el.nodeType === Node.ELEMENT_NODE && el.getAttribute(PHX_SKIP) !== null
   }
 
@@ -1341,34 +1401,6 @@ class DOMPatch {
       Array.from(template.content.childNodes).forEach(el => diffContainer.insertBefore(el, firstComponent))
       firstComponent.remove()
       return diffContainer.outerHTML
-    }
- }
-
-  syncPendingRef(fromEl, toEl){
-    let fromRefAttr = fromEl.getAttribute && fromEl.getAttribute(PHX_REF)
-    if(fromRefAttr === null){ return true }
-
-    let fromRef = parseInt(fromRefAttr)
-    if(this.ref !== null && this.ref >= fromRef){
-      [fromEl, toEl].forEach(el => {
-        el.removeAttribute(PHX_REF)
-        if(el.getAttribute(PHX_READONLY) !== null){
-          el.readOnly = false
-          el.removeAttribute(PHX_READONLY)
-        }
-        PHX_EVENT_CLASSES.forEach(className => DOM.removeClass(el, className))
-      })
-      return true
-    } else {
-      PHX_EVENT_CLASSES.forEach(className => {
-        fromEl.classList.contains(className) && toEl.classList.add(className)
-      })
-      toEl.setAttribute(PHX_REF, fromEl.getAttribute(PHX_REF))
-      if(DOM.isFormInput(fromEl) || /submit/i.test(fromEl.type)){
-        return false
-      } else {
-        return true
-      }
     }
   }
 }
@@ -1490,7 +1522,7 @@ export class View {
     this.log("join", () => ["", rendered])
     if(rendered.title){ DOM.putTitle(rendered.title) }
     Browser.dropLocal(this.name(), CONSECUTIVE_RELOADS)
-    this.rendered = Rendered.build(rendered)
+    this.rendered = new Rendered(this.id, rendered)
     let html = this.renderContainer(null, "join")
     this.dropPendingRefs()
     let forms = this.formsForRecovery(html)
@@ -1674,7 +1706,7 @@ export class View {
     if(this.isJoinPending() || this.liveSocket.hasPendingLink()){ return this.pendingDiffs.push({diff, cid: cidAck, ref}) }
 
     this.log("update", () => ["", diff])
-    this.rendered = Rendered.mergeDiff(this.rendered, diff)
+    this.rendered.mergeDiff(diff)
     let phxChildrenAdded = false
 
     // when we don't have an acknowledgement CID and the diff only contains
@@ -1682,41 +1714,39 @@ export class View {
     // containers found in the diff. Otherwise, patch entire LV container.
     if(typeof(cidAck) === "number"){
       this.liveSocket.time("component ack patch complete", () => {
-        if(this.componentPatch(cidAck, ref)){ phxChildrenAdded = true }
+        if(this.componentPatch(diff[COMPONENTS][cidAck], cidAck, ref)){ phxChildrenAdded = true }
       })
-    } else if(Rendered.isComponentOnlyDiff(diff)){
+    } else if(this.rendered.isComponentOnlyDiff(diff)){
       this.liveSocket.time("component patch complete", () => {
-        let parentCids = DOM.findParentCIDs(this.el, Rendered.componentCIDs(diff))
+        let parentCids = DOM.findParentCIDs(this.el, this.rendered.componentCIDs(diff))
         parentCids.forEach(parentCID => {
-          if(this.componentPatch(parentCID, ref)){ phxChildrenAdded = true }
+          if(this.componentPatch(diff[COMPONENTS][parentCID], parentCID, ref)){ phxChildrenAdded = true }
         })
       })
-    } else if(isEmpty(diff)){
-      let patch = new DOMPatch(this, this.el, this.id, "", null, ref)
-      patch.undoRefs()
-    } else {
+    } else if(!isEmpty(diff)){
       this.liveSocket.time("full patch complete", () => {
         let html = this.renderContainer(diff, "update")
         let patch = new DOMPatch(this, this.el, this.id, html, null, ref)
         phxChildrenAdded = this.performPatch(patch)
-        patch.undoRefs()
       })
     }
 
+    DOM.undoRefs(ref, this.el)
     if(phxChildrenAdded){ this.joinNewChildren() }
   }
 
   renderContainer(diff, kind){
     return this.liveSocket.time(`toString diff (${kind})`, () => {
       let tag = this.el.tagName
-      let cids = diff ? Rendered.componentCIDs(diff) : null
-      let html = Rendered.toString(this.rendered, this.rendered[COMPONENTS], cids)
+      let cids = diff ? this.rendered.componentCIDs(diff) : null
+      let html = this.rendered.toString(cids)
       return `<${tag}>${html}</${tag}>`
     })
   }
 
-  componentPatch(cid, ref){
-    let html = Rendered.componentToString(this.rendered, cid)
+  componentPatch(diff, cid, ref){
+    if(isEmpty(diff)) return false
+    let html = this.rendered.componentToString(cid)
     let patch = new DOMPatch(this, this.el, this.id, html, cid, ref)
     let childrenAdded = this.performPatch(patch)
     return childrenAdded
@@ -1874,7 +1904,12 @@ export class View {
       el.classList.add(`phx-${event}-loading`)
       el.setAttribute(PHX_REF, newRef)
       let disableText = el.getAttribute(disableWith)
-      if(disableText !== null){ el.innerText = disableText }
+      if(disableText !== null){
+        if(!el.getAttribute(PHX_DISABLE_WITH_RESTORE)){
+          el.setAttribute(PHX_DISABLE_WITH_RESTORE, el.innerText)
+        }
+        el.innerText = disableText
+      }
     })
     return [newRef, elements]
   }
@@ -2024,7 +2059,7 @@ export class View {
     })
     if(completelyDestroyedCIDs.length > 0){
       this.pushWithReply(null, "cids_destroyed", {cids: completelyDestroyedCIDs}, () => {
-        this.rendered = Rendered.pruneCIDs(this.rendered, completelyDestroyedCIDs)
+        this.rendered.pruneCIDs(completelyDestroyedCIDs)
       })
     }
   }

@@ -38,6 +38,11 @@ defmodule Phoenix.LiveViewTest.ClientProxy do
   end
 
   def init(opts) do
+    # Since we are always running in the test client,
+    # we will disable our own logging and let the client
+    # do the job.
+    Logger.disable(self())
+
     {_caller_pid, _caller_ref} = caller = Keyword.fetch!(opts, :caller)
     root_html = Keyword.fetch!(opts, :html)
     root_view = Keyword.fetch!(opts, :proxy)
@@ -59,26 +64,25 @@ defmodule Phoenix.LiveViewTest.ClientProxy do
       session: session
     }
 
-    case mount_view(state, root_view, timeout, url) do
-      {:ok, root_view, rendered} ->
-        try do
-          state
-          |> Map.put(:root_view, root_view)
-          |> put_view(root_view, rendered)
-          |> detect_added_or_removed_children(root_view, root_html)
-        catch
-          :throw, {:stop, {:shutdown, reason}, _} ->
-            send_caller(state, {:error, reason})
-            :ignore
-        else
-          new_state ->
-            send_caller(new_state, {:ok, build_view(root_view), DOM.to_html(new_state.html)})
-            {:ok, new_state}
-        end
+    try do
+      {root_view, rendered} = mount_view(state, root_view, timeout, url)
 
-      {:error, reason} ->
+      new_state =
+        state
+        |> Map.put(:root_view, root_view)
+        |> put_view(root_view, rendered)
+        |> detect_added_or_removed_children(root_view, root_html)
+
+      send_caller(new_state, {:ok, build_view(root_view), DOM.to_html(new_state.html)})
+      {:ok, new_state}
+    catch
+      :throw, {:stop, {:shutdown, reason}, _state} ->
         send_caller(state, {:error, reason})
         :ignore
+
+      :throw, {:stop, reason, _} ->
+        Process.unlink(elem(caller, 0))
+        {:stop, reason}
     end
   end
 
@@ -97,20 +101,25 @@ defmodule Phoenix.LiveViewTest.ClientProxy do
         receive do
           {^ref, {:ok, %{rendered: rendered}}} ->
             Process.demonitor(mon_ref, [:flush])
-            {:ok, %{view | pid: pid}, rendered}
+            {%{view | pid: pid}, rendered}
+
+          {^ref, {:error, %{live_redirect: opts}}} ->
+            throw(stop_redirect(state, view.topic, {:live_redirect, opts}))
+
+          {^ref, {:error, %{redirect: opts}}} ->
+            throw(stop_redirect(state, view.topic, {:redirect, opts}))
 
           {^ref, {:error, reason}} ->
-            Process.demonitor(mon_ref, [:flush])
-            {:error, reason}
+            throw({:stop, reason, state})
 
           {:DOWN, ^mon_ref, _, _, reason} ->
-            {:error, reason}
+            throw({:stop, reason, state})
         after
           timeout -> exit(:timeout)
         end
 
       {:error, reason} ->
-        {:error, reason}
+        throw({:stop, reason, state})
     end
   end
 
@@ -223,14 +232,14 @@ defmodule Phoenix.LiveViewTest.ClientProxy do
 
         case payload do
           %{live_redirect: %{to: _to} = opts} ->
-            stop_redirect(state, topic, {:live_redirect, opts}, from)
+            stop_redirect(state, topic, {:live_redirect, opts})
 
           %{live_patch: %{to: _to} = opts} ->
             send_patch(state, topic, opts)
             {:noreply, render_reply(reply, from, state)}
 
           %{redirect: %{to: _to} = opts} ->
-            stop_redirect(state, topic, {:redirect, opts}, from)
+            stop_redirect(state, topic, {:redirect, opts})
 
           %{} ->
             {:noreply, render_reply(reply, from, state)}
@@ -244,7 +253,6 @@ defmodule Phoenix.LiveViewTest.ClientProxy do
   def handle_info({:DOWN, _ref, :process, pid, reason}, state) do
     case fetch_view_by_pid(state, pid) do
       {:ok, _view} ->
-        Logger.disable(self())
         {:stop, reason, state}
 
       :error ->
@@ -277,26 +285,28 @@ defmodule Phoenix.LiveViewTest.ClientProxy do
       case topic_or_element do
         {topic, event} ->
           view = fetch_view_by_topic!(state, topic)
-          {view, nil, event, %{}}
+          {view, nil, event, stringify(:hook, value)}
 
         %Element{} = element ->
           view = fetch_view_by_topic!(state, proxy_topic(element))
           root = root(state, view)
 
           with {:ok, node} <- select_node(root, element),
+               :ok <- maybe_enabled(type, node, element),
                {:ok, event} <- maybe_event(type, node, element),
+               {:ok, extra} <- maybe_values(type, node, element),
                {:ok, cid} <- maybe_cid(root, node) do
-            {view, cid, event, event_values(type, node)}
+            {view, cid, event, DOM.deep_merge(extra, stringify(type, value))}
           end
       end
 
     case result do
-      {view, cid, event, extra} ->
+      {view, cid, event, values} ->
         payload = %{
           "cid" => cid,
           "type" => Atom.to_string(type),
           "event" => event,
-          "value" => encode(type, DOM.deep_merge(extra, stringify(value)))
+          "value" => encode(type, values)
         }
 
         {:noreply, push_with_reply(state, from, view, "event", payload)}
@@ -305,7 +315,7 @@ defmodule Phoenix.LiveViewTest.ClientProxy do
         handle_call({:render_patch, topic, path}, from, state)
 
       {:stop, topic, reason} ->
-        stop_redirect(state, topic, reason, from)
+        stop_redirect(state, topic, reason)
 
       {:error, _, message} ->
         {:reply, {:raise, ArgumentError.exception(message)}, state}
@@ -418,19 +428,9 @@ defmodule Phoenix.LiveViewTest.ClientProxy do
     end
   end
 
-  defp stop_redirect(%{caller: {pid, _}} = state, topic, {_kind, opts} = reason, from \\ nil)
+  defp stop_redirect(%{caller: {pid, _}} = state, topic, {_kind, opts} = reason)
        when is_binary(topic) do
-    # First emit the redirect to avoid races between a render command
-    # returning {:error, redirect} but the redirect is not yet in its
-    # inbox.
     send_caller(state, {:redirect, topic, opts})
-
-    # Then we will reply with the actual reason. However, because in
-    # some cases the redirect may be sent off-band, the client still
-    # needs to catch any redirect server shutdown.
-    from && GenServer.reply(from, {:error, reason})
-
-    # Now we are ready to shutdown but unlink to avoid caller crashes.
     Process.unlink(pid)
     {:stop, {:shutdown, reason}, state}
   end
@@ -518,24 +518,12 @@ defmodule Phoenix.LiveViewTest.ClientProxy do
           static = static || Map.get(state.root_view.child_statics, id)
           child_view = build_child(view, id: id, session_token: session, static_token: static)
 
+          {child_view, rendered} = mount_view(acc, child_view, acc.timeout, nil)
+
           acc
-          |> mount_view(child_view, acc.timeout, nil)
-          |> case do
-            {:ok, child_view, rendered} ->
-              acc
-              |> put_view(child_view, rendered)
-              |> put_child(view, id, child_view.session_token)
-              |> recursive_detect_added_or_removed_children(child_view, acc.html)
-
-            {:error, %{live_redirect: opts}} ->
-              throw(stop_redirect(acc, view.topic, {:live_redirect, opts}))
-
-            {:error, %{redirect: opts}} ->
-              throw(stop_redirect(acc, view.topic, {:redirect, opts}))
-
-            {:error, reason} ->
-              raise "failed to mount view: #{Exception.format_exit(reason)}"
-          end
+          |> put_view(child_view, rendered)
+          |> put_child(view, id, child_view.session_token)
+          |> recursive_detect_added_or_removed_children(child_view, acc.html)
       end
     end)
   end
@@ -615,22 +603,26 @@ defmodule Phoenix.LiveViewTest.ClientProxy do
         {:ok, filtered_node}
 
       {[], _} ->
-        {:error, :none, "selector #{inspect(selector)} did not return any element"}
+        {:error, :none,
+         "selector #{inspect(selector)} did not return any element within: \n\n" <>
+           DOM.inspect_html(root)}
 
       {[node], []} ->
         {:error, :none,
          "selector #{inspect(selector)} did not match text filter #{inspect(text_filter)}, " <>
-           "got: #{inspect(DOM.to_text(node))}"}
+           "got: \n\n#{DOM.inspect_html(node)}"}
 
       {_, []} ->
         {:error, :none,
          "selector #{inspect(selector)} returned #{length(nodes)} elements " <>
-           "but none matched the text filter #{inspect(text_filter)}"}
+           "but none matched the text filter #{inspect(text_filter)}: \n\n" <>
+           DOM.inspect_html(nodes)}
 
       {_, _} ->
         {:error, :many,
          "selector #{inspect(selector)} returned #{length(nodes)} elements " <>
-           "and #{length(filtered_nodes)} of them matched the text filter #{inspect(text_filter)}"}
+           "and #{length(filtered_nodes)} of them matched the text filter #{inspect(text_filter)}: \n\n " <>
+           DOM.inspect_html(filtered_nodes)}
     end
   end
 
@@ -668,23 +660,19 @@ defmodule Phoenix.LiveViewTest.ClientProxy do
     end
   end
 
-  defp maybe_event(:hook, {_, attrs, _}, %Element{event: event} = element) do
+  defp maybe_event(:hook, node, %Element{event: event} = element) do
     true = is_binary(event)
 
-    case List.keyfind(attrs, "phx-hook", 0) do
-      {_, _} ->
-        case List.keyfind(attrs, "id", 0) do
-          {_, _} ->
-            {:ok, event}
-
-          _ ->
-            {:error, :invalid,
-             "element selected by #{inspect(element.selector)} for phx-hook does not have an ID"}
-        end
-
-      _ ->
+    if DOM.attribute(node, "phx-hook") do
+      if DOM.attribute(node, "id") do
+        {:ok, event}
+      else
         {:error, :invalid,
-         "element selected by #{inspect(element.selector)} does not have phx-hook attribute"}
+         "element selected by #{inspect(element.selector)} for phx-hook does not have an ID"}
+      end
+    else
+      {:error, :invalid,
+       "element selected by #{inspect(element.selector)} does not have phx-hook attribute"}
     end
   end
 
@@ -693,61 +681,247 @@ defmodule Phoenix.LiveViewTest.ClientProxy do
     {:ok, event}
   end
 
-  defp maybe_event(:click, {"a", attrs, _}, element) do
-    case List.keyfind(attrs, "phx-click", 0) do
-      {_, event} ->
+  defp maybe_event(:click, {"a", _, _} = node, element) do
+    cond do
+      event = DOM.attribute(node, "phx-click") ->
         {:ok, event}
 
-      nil ->
-        case List.keyfind(attrs, "href", 0) do
-          {_, to} ->
-            case List.keyfind(attrs, "data-phx-link", 0) do
-              {_, "patch"} ->
-                {:patch, proxy_topic(element), to}
+      to = DOM.attribute(node, "href") ->
+        case DOM.attribute(node, "data-phx-link") do
+          "patch" ->
+            {:patch, proxy_topic(element), to}
 
-              {_, "redirect"} ->
-                {_, kind} = List.keyfind(attrs, "data-phx-link-state", 0, {:default, "push"})
-
-                {:stop, proxy_topic(element),
-                 {:live_redirect, %{to: to, kind: String.to_atom(kind)}}}
-
-              nil ->
-                {:stop, proxy_topic(element), {:redirect, %{to: to}}}
-            end
+          "redirect" ->
+            kind = DOM.attribute(node, "data-phx-link-state") || "push"
+            {:stop, proxy_topic(element), {:live_redirect, %{to: to, kind: String.to_atom(kind)}}}
 
           nil ->
-            {:error, :invalid,
-             "clicked link selected by #{inspect(element.selector)} does not have phx-click or href attributes"}
+            {:stop, proxy_topic(element), {:redirect, %{to: to}}}
         end
+
+      true ->
+        {:error, :invalid,
+         "clicked link selected by #{inspect(element.selector)} does not have phx-click or href attributes"}
     end
   end
 
-  defp maybe_event(type, {_, attrs, _}, element) do
-    case List.keyfind(attrs, "phx-#{type}", 0) do
-      {_, event} ->
+  defp maybe_event(type, node, element) when type in [:keyup, :keydown] do
+    cond do
+      event = DOM.attribute(node, "phx-#{type}") ->
         {:ok, event}
 
-      _ ->
+      event = DOM.attribute(node, "phx-window-#{type}") ->
+        {:ok, event}
+
+      true ->
         {:error, :invalid,
-         "element selected by #{inspect(element.selector)} does not have phx-#{type} attribute"}
+         "element selected by #{inspect(element.selector)} does not have " <>
+           "phx-#{type} or phx-window-#{type} attributes"}
     end
   end
 
-  defp event_values(type, _) when type in [:change, :submit, :hook], do: %{}
-  defp event_values(_, node), do: DOM.all_values(node)
+  defp maybe_event(type, node, element) do
+    if event = DOM.attribute(node, "phx-#{type}") do
+      {:ok, event}
+    else
+      {:error, :invalid,
+       "element selected by #{inspect(element.selector)} does not have phx-#{type} attribute"}
+    end
+  end
+
+  defp maybe_enabled(_type, {tag, _, _}, %{form_data: form_data})
+       when tag != "form" and form_data != nil do
+    {:error, :invalid,
+     "a form element was given but the selected node is not a form, got #{inspect(tag)}}"}
+  end
+
+  defp maybe_enabled(type, node, element) do
+    if DOM.attribute(node, "disabled") do
+      {:error, :invalid,
+       "cannot #{type} element #{inspect(element.selector)} because it is disabled"}
+    else
+      :ok
+    end
+  end
+
+  defp maybe_values(:hook, _node, _element), do: {:ok, %{}}
+
+  defp maybe_values(type, {tag, _, _} = node, element) when type in [:change, :submit] do
+    if tag == "form" do
+      defaults =
+        node
+        |> DOM.all("input, select, textarea")
+        |> Enum.reverse()
+        |> Enum.reduce(%{}, &form_defaults/2)
+
+      stringified = stringify(type, element.form_data || %{})
+
+      case fill_in_map(Map.to_list(stringified), "", node) do
+        :ok -> {:ok, DOM.deep_merge(defaults, stringified)}
+        {:error, _, _} = error -> error
+      end
+    else
+      {:error, :invalid, "phx-#{type} is only allowed in forms, got #{inspect(tag)}"}
+    end
+  end
+
+  defp maybe_values(_type, node, _element) do
+    {:ok, DOM.all_values(node)}
+  end
+
+  defp form_defaults(node, acc) do
+    cond do
+      DOM.attribute(node, "disabled") -> acc
+      name = DOM.attribute(node, "name") -> form_defaults(node, name, acc)
+      true -> acc
+    end
+  end
+
+  defp form_defaults({"select", _, _} = node, name, acc) do
+    options = DOM.all(node, "option")
+
+    all_selected =
+      if DOM.attribute(node, "multiple") do
+        Enum.filter(options, &DOM.attribute(&1, "selected"))
+      else
+        List.wrap(Enum.find(options, &DOM.attribute(&1, "selected")) || List.first(options))
+      end
+
+    all_selected
+    |> Enum.reverse()
+    |> Enum.reduce(acc, fn selected, acc ->
+      Plug.Conn.Query.decode_pair({name, DOM.attribute(selected, "value")}, acc)
+    end)
+  end
+
+  defp form_defaults({"textarea", _, [value]}, name, acc) do
+    Plug.Conn.Query.decode_pair({name, value}, acc)
+  end
+
+  defp form_defaults({"input", _, _} = node, name, acc) do
+    type = DOM.attribute(node, "type") || "text"
+    value = DOM.attribute(node, "value") || ""
+
+    cond do
+      type in ["radio", "checkbox"] ->
+        if DOM.attribute(node, "checked") do
+          Plug.Conn.Query.decode_pair({name, value}, acc)
+        else
+          acc
+        end
+
+      type in ["image", "submit"] ->
+        acc
+
+      true ->
+        Plug.Conn.Query.decode_pair({name, value}, acc)
+    end
+  end
+
+  defp fill_in_map([{key, value} | rest], prefix, node) do
+    case fill_in_type(value, fill_in_name(prefix, key), node) do
+      :ok -> fill_in_map(rest, prefix, node)
+      {:error, _, _} = error -> error
+    end
+  end
+
+  defp fill_in_map([], _prefix, _node) do
+    :ok
+  end
+
+  defp fill_in_type(%{} = value, key, node), do: fill_in_map(Map.to_list(value), key, node)
+  defp fill_in_type(value, key, node), do: fill_in_value(value, key, node)
+
+  @limited ["select", "multiple select", "checkbox", "radio", "hidden"]
+  @forbidden ["submit", "image"]
+
+  defp fill_in_value(value, name, node) do
+    name = if is_list(value), do: name <> "[]", else: name
+
+    {types, values} =
+      node
+      |> DOM.all("[name=#{inspect(name)}]:not([disabled])")
+      |> collect_values([], [])
+
+    limited? = Enum.all?(types, &(&1 in @limited))
+
+    cond do
+      types == [] ->
+        {:error, :invalid,
+         "could not find non-disabled input, select or textarea with name #{inspect(name)} within:\n\n" <>
+           DOM.inspect_html(DOM.all(node, "[name]"))}
+
+      forbidden_type = Enum.find(types, &(&1 in @forbidden)) ->
+        {:error, :invalid,
+         "cannot provide value to #{inspect(name)} because #{forbidden_type} inputs are never submitted"}
+
+      value = limited? && value |> List.wrap() |> Enum.find(&(&1 not in values)) ->
+        {:error, :invalid,
+         "value for #{hd(types)} #{inspect(name)} must be one of #{inspect(values)}, " <>
+           "got: #{inspect(value)}"}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp collect_values([{"textarea", _, _} | nodes], types, values) do
+    collect_values(nodes, ["textarea" | types], values)
+  end
+
+  defp collect_values([{"input", _, _} = node | nodes], types, values) do
+    type = DOM.attribute(node, "type") || "text"
+
+    if type in ["radio", "checkbox", "hidden"] do
+      value = DOM.attribute(node, "value") || ""
+      collect_values(nodes, [type | types], [value | values])
+    else
+      collect_values(nodes, [type | types], values)
+    end
+  end
+
+  defp collect_values([{"select", _, _} = node | nodes], types, values) do
+    options = node |> DOM.all("option") |> Enum.map(&(DOM.attribute(&1, "value") || ""))
+
+    if DOM.attribute(node, "multiple") do
+      collect_values(nodes, ["multiple select" | types], Enum.reverse(options, values))
+    else
+      collect_values(nodes, ["select" | types], Enum.reverse(options, values))
+    end
+  end
+
+  defp collect_values([_ | nodes], types, values) do
+    collect_values(nodes, types, values)
+  end
+
+  defp collect_values([], types, values) do
+    {types, Enum.reverse(values)}
+  end
+
+  defp fill_in_name("", name), do: name
+  defp fill_in_name(prefix, name), do: prefix <> "[" <> name <> "]"
 
   defp encode(:form, value), do: Plug.Conn.Query.encode(value)
   defp encode(_, value), do: value
 
-  defp stringify(%{__struct__: _} = struct),
-    do: struct
+  defp stringify(:hook, value), do: do_stringify(value, & &1)
+  defp stringify(_, value), do: do_stringify(value, &to_string/1)
 
-  defp stringify(%{} = params),
-    do: Enum.into(params, %{}, &stringify_kv/1)
+  defp do_stringify(%{__struct__: _} = struct, fun),
+    do: do_stringify_simple(struct, fun)
 
-  defp stringify(other),
-    do: other
+  defp do_stringify(%{} = params, fun),
+    do: Enum.into(params, %{}, &do_stringify_kv(&1, fun))
 
-  defp stringify_kv({k, v}),
-    do: {to_string(k), stringify(v)}
+  defp do_stringify([{_, _} | _] = params, fun),
+    do: Enum.into(params, %{}, &do_stringify_kv(&1, fun))
+
+  defp do_stringify(params, fun) when is_list(params),
+    do: Enum.map(params, &do_stringify(&1, fun))
+
+  defp do_stringify(other, fun),
+    do: do_stringify_simple(other, fun)
+
+  defp do_stringify_simple(other, fun), do: fun.(other)
+  defp do_stringify_kv({k, v}, fun), do: {to_string(k), do_stringify(v, fun)}
 end

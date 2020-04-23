@@ -1,6 +1,14 @@
 # Changelog
 
-## 0.12.0-dev
+## 0.12.1 (2020-04-19)
+
+### Bug fixes
+  - Fix component innerHTML being discarded when a sibling DOM element appears above it, in cases where the component lacks a DOM id
+  - Fix firefox reconnecting briefly during hard redirects
+  - Fix phx-disable-with and other pending attributes failing to be restored when an empty patch is returned by server
+  - Ensure LiveView module is loaded before mount to prevent first application request logging errors if the very first request is to a connected LiveView
+
+## 0.12.0 (2020-04-16)
 
 This version of LiveView comes with an overhaul of the testing module, more closely integrating your LiveView template with your LiveView events. For example, in previous versions, you could write this test:
 
@@ -17,17 +25,34 @@ The new implementation will check there is a button at `#term .buttons a`, with 
 ### Enhancements
   - Add `assert_patch/3` and `assert_patched/2` for asserting on patches
   - Add `follow_redirect/3` to automatically follow redirects from `render_*` events
+  - Add `phx-trigger-action` form annotation to trigger an HTTP form submit on next DOM patch
 
 ### Bug fixes
   - Fix phx-target @myself targetting a sibling LiveView component with the same component ID
   - Fix phx:page-loading-stop firing before the DOM patch has been performed
+  - Fix `phx-update=prepend` failing to properly patch the DOM when the same ID is updated back to back
+  - Fix redirects on mount failing to copy flash
 
 ### Backwards incompatible changes
+  - `phx-error-for` has been removed in favor of `phx-feedback-for`. `phx-feedback-for` will set a `phx-no-feedback` class whenever feedback has to be hidden
   - `Phoenix.LiveViewTest.children/1` has been renamed to `Phoenix.LiveViewTest.live_children/1`
   - `Phoenix.LiveViewTest.find_child/2` has been renamed to `Phoenix.LiveViewTest.find_live_child/2`
   - `Phoenix.LiveViewTest.assert_redirect/3` no longer matches on the flash, instead it returns the flash
   - `Phoenix.LiveViewTest.assert_redirect/3` no longer matches on the patch redirects, use `assert_patch/3` instead
   - `Phoenix.LiveViewTest.assert_remove/3` has been removed. If the LiveView crashes, it will cause the test to crash too
+  - Passing a path with DOM IDs to `render_*` test functions is deprecated. Furthermore, they now require a `phx-target="<%= @id %>"` on the given DOM ID:
+
+    ```html
+    <div id="component-id" phx-target="component-id">
+      ...
+    </div>
+    ```
+
+    ```elixir
+    html = render_submit([view, "#component-id"], event, value)
+    ```
+
+  In any case case, this API is deprecated and you should migrate to the new element based API.
 
 ## 0.11.1 (2020-04-08)
 
@@ -40,6 +65,7 @@ The new implementation will check there is a button at `#term .buttons a`, with 
 
 ### Backwards incompatible changes
   - `render_event`/`render_click` and friends now expect a DOM ID selector to be given when working with components. For example, instead of `render_click([live, "user-13"])`, you should write `render_click([live, "#user-13"])`, mirroring the `phx-target` API
+  - Accessing the socket assigns directly `@socket.assigns[...]` in a template will now raise the exception `Phoenix.LiveView.Socket.AssignsNotInSocket`. The socket assigns are available directly inside the template as LiveEEx `assigns`, such as `@foo` and `@bar`. Any assign access should be done using the assigns in the template where proper change tracking takes place.
 
 ### Enhancements
   - Trigger debounced events immediately on input blur

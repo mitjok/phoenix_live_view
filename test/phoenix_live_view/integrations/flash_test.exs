@@ -18,6 +18,15 @@ defmodule Phoenix.LiveView.FlashIntegrationTest do
   end
 
   describe "LiveView <=> LiveView" do
+    test "redirect with flash on mount", %{conn: conn} do
+      {:ok, conn} =
+        conn
+        |> live("/flash-child?mount_redirect=ok!")
+        |> follow_redirect(conn)
+
+      assert conn.resp_body =~ "root[ok!]:info"
+    end
+
     test "redirect with flash", %{conn: conn} do
       {:ok, flash_child, _} = live(conn, "/flash-child")
 
@@ -45,6 +54,15 @@ defmodule Phoenix.LiveView.FlashIntegrationTest do
 
       flash = assert_redirected(flash_child, "/flash-root")
       assert flash == %{"info" => "ok!"}
+    end
+
+    test "push_redirect with flash on mount", %{conn: conn} do
+      {:ok, _, html} =
+        conn
+        |> live("/flash-child?mount_push_redirect=ok!")
+        |> follow_redirect(conn)
+
+      assert html =~ "root[ok!]:info"
     end
 
     test "push_redirect with flash", %{conn: conn} do
@@ -205,7 +223,10 @@ defmodule Phoenix.LiveView.FlashIntegrationTest do
       {:ok, flash_live, _} = live(conn, "/flash-root")
 
       {:error, {:redirect, %{flash: _}}} =
-        render_click([flash_live, "#flash-component"], "redirect", %{
+        flash_live
+        |> element("#flash-component")
+        |> render_click(%{
+          "type" => "redirect",
           "to" => "/flash-root",
           "info" => "ok!"
         })
@@ -218,7 +239,10 @@ defmodule Phoenix.LiveView.FlashIntegrationTest do
       {:ok, flash_live, _} = live(conn, "/flash-root")
 
       {:error, {:live_redirect, %{flash: _}}} =
-        render_click([flash_live, "#flash-component"], "push_redirect", %{
+        flash_live
+        |> element("#flash-component")
+        |> render_click(%{
+          "type" => "push_redirect",
           "to" => "/flash-root",
           "info" => "ok!"
         })
@@ -230,7 +254,10 @@ defmodule Phoenix.LiveView.FlashIntegrationTest do
     test "push_patch with flash from component", %{conn: conn} do
       {:ok, flash_live, _} = live(conn, "/flash-root")
 
-      render_click([flash_live, "#flash-component"], "push_patch", %{
+      flash_live
+      |> element("#flash-component")
+      |> render_click(%{
+        "type" => "push_patch",
         "to" => "/flash-root?patch",
         "info" => "ok!"
       })
@@ -291,16 +318,24 @@ defmodule Phoenix.LiveView.FlashIntegrationTest do
   test "lv:clear-flash component", %{conn: conn} do
     {:ok, flash_live, _} = live(conn, "/flash-root")
 
-    result = render_click([flash_live, "#flash-component"], "put_flash", %{"info" => "ok!"})
+    result =
+      flash_live
+      |> element("#flash-component")
+      |> render_click(%{"type" => "put_flash", "info" => "ok!"})
+
     assert result =~ "component[ok!]:info"
 
-    result = render_click([flash_live, "#flash-component"], "lv:clear-flash")
+    result = flash_live |> element("#flash-component span", "Clear all") |> render_click()
     assert result =~ "component[]:info"
 
-    result = render_click([flash_live, "#flash-component"], "put_flash", %{"error" => "oops!"})
+    result =
+      flash_live
+      |> element("#flash-component")
+      |> render_click(%{"type" => "put_flash", "error" => "oops!"})
+
     assert result =~ "component[oops!]:error"
 
-    result = render_click([flash_live, "#flash-component"], "lv:clear-flash", %{key: "error"})
+    result = flash_live |> element("#flash-component span", ":error") |> render_click()
     assert result =~ "component[]:error"
   end
 

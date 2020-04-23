@@ -362,7 +362,7 @@ defmodule Phoenix.LiveView do
   | [Params](#module-click-events) | `phx-value-*` |
   | [Click Events](#module-click-events) | `phx-click`, `phx-capture-click` |
   | [Focus/Blur Events](#module-focus-and-blur-events) | `phx-blur`, `phx-focus` |
-  | [Form Events](#module-form-events) | `phx-change`, `phx-submit`, `data-phx-error-for`, `phx-disable-with` |
+  | [Form Events](#module-form-events) | `phx-change`, `phx-submit`, `phx-feedback-for`, `phx-disable-with` |
   | [Key Events](#module-key-events) | `phx-window-keydown`, `phx-window-keyup` |
   | [Rate Limiting](#module-rate-limiting-events-with-debounce-and-throttle) | `phx-debounce`, `phx-throttle` |
   | [DOM Patching](#module-dom-patching-and-temporary-assigns) | `phx-update` |
@@ -444,6 +444,9 @@ defmodule Phoenix.LiveView do
         <%= submit "Save" %>
       </form>
 
+  *Reminder*: `form_for/3` is a `Phoenix.HTML` helper. Don't forget to include 
+  `use Phoenix.HTML` at the top of your LiveView, if using `Phoenix.HTML` helpers.
+
   Next, your LiveView picks up the events in `handle_event` callbacks:
 
       def render(assigns) ...
@@ -486,8 +489,8 @@ defmodule Phoenix.LiveView do
   changeset to be re-rendered for the client.
 
   *Note*: For proper form error tag updates, the error tag must specify which
-  input it belongs to. This is accomplished with the `data-phx-error-for` attribute.
-  Failing to add the `data-phx-error-for` attribute will result in displaying error
+  input it belongs to. This is accomplished with the `phx-feedback-for` attribute.
+  Failing to add the `phx-feedback-for` attribute will result in displaying error
   messages for form fields that the user has not changed yet (e.g. required
   fields further down on the page.)
 
@@ -498,10 +501,45 @@ defmodule Phoenix.LiveView do
         |> Keyword.get_values(field)
         |> Enum.map(fn error ->
           content_tag(:span, translate_error(error),
-            class: "help-block",
-            data: [phx_error_for: input_id(form, field)]
+            class: "invalid-feedback",
+            phx_feedback_for: input_id(form, field)
           )
         end)
+      end
+
+  Now, any DOM container with the `phx-feedback-for` attribute will receive a
+  `phx-no-feedback` class in cases where the form fields has yet to receive
+  user input/focus. The following css rules are generated in new projects
+  to hide the errors:
+
+      .phx-no-feedback.invalid-feedback, .phx-no-feedback .invalid-feedback {
+        display: none;
+      }
+
+  #### Submitting the form action over HTTP
+
+  The `phx-trigger-action` attribute can be added to a form to trigger a standard
+  form submit on DOM patch to the URL specified in the form's standard `action`
+  attribute. This is useful to perform pre-final validation of a LiveView form
+  submit before posting to a controller route for operations that require
+  Plug session mutation. For example, in your LiveView template you can
+  annotate the `phx-trigger-action` with a boolean assign:
+
+      <%= f = form_for @changeset, Routes.reset_password_path(@socket, :create),
+        phx_submit: :save,
+        phx_trigger_action: @trigger_submit %>
+
+  Then in your LiveView, you can toggle the assign to trigger the form with the current
+  fields on next render:
+
+      def handle_event("save", params, socket) do
+        case validate_change_password(socket.assigns.user, params) do
+          {:ok, changeset} ->
+            {:noreply, assign(socket, changeset: changeset, trigger_submit: true)}
+
+          {:error, changeset} ->
+            {:noreply, assign(socket, changeset: changeset)}
+          end
       end
 
   ### Number inputs
@@ -881,7 +919,7 @@ defmodule Phoenix.LiveView do
 
   ## Live Layouts
 
-  When working with LiveViews, there is usually three layouts to be
+  When working with LiveViews, there are usually three layouts to be
   considered:
 
     * the root layout - this is a layout used by both LiveView and
@@ -905,12 +943,12 @@ defmodule Phoenix.LiveView do
   access to the `@conn` assign. The root layout must be defined
   in your router:
 
-      plug :put_root_layout, {MyApp.LayoutView, :root}
+      plug :put_root_layout, {MyAppWeb.LayoutView, :root}
 
   Alternatively, the layout can be passed to the `live` macro
   in the router:
 
-      live "/dashboard", MyApp.Dashboard, layout: {MyApp.LayoutView, :root}
+      live "/dashboard", MyApp.Dashboard, layout: {MyAppWeb.LayoutView, :root}
 
   If you want the "root" layout to only apply to LiveViews, you
   can pass it as a option or define it in a specific pipeline that
@@ -1051,7 +1089,7 @@ defmodule Phoenix.LiveView do
   so LiveView includes a latency simulator with the JavaScript client to ensure your
   application provides a pleasant experience. Like the `enableDebug()` function above,
   the `LiveSocket` instance includes `enableLatencySim(milliseconds)` and `disableLatencySim()`
-  functions which apply throughout the current browser sesssion. The `enableLatencySim` function
+  functions which apply throughout the current browser session. The `enableLatencySim` function
   accepts an integer in milliseconds for the round-trip-time to the server. For example:
 
       // app.js
@@ -1110,7 +1148,7 @@ defmodule Phoenix.LiveView do
       <button type="submit" phx-disable-with="Saving...">Save</button>
 
   You may also take advantage of LiveView's CSS loading state classes to
-  swap our your form content while the form is submitting. For example,
+  swap out your form content while the form is submitting. For example,
   with the following rules in your `app.css`:
 
       .while-submitting { display: none; }
@@ -1124,7 +1162,7 @@ defmodule Phoenix.LiveView do
   You can show and hide content with the following markup:
 
       <form phx-change="update">
-        <div class="while-submitting">Please waiting while we save our content...</div>
+        <div class="while-submitting">Please wait while we save our content...</div>
         <div class="inputs">
           <input type="text" name="text" value="<%= @text %>">
         </div>
