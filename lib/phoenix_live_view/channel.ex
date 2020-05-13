@@ -9,10 +9,19 @@ defmodule Phoenix.LiveView.Channel do
 
   @prefix :phoenix
 
+  # For backwards compatibility with Phoenix v1.4.x.
+  # TODO: Remove once we depend on Phoenix v1.5.2+.
   def start_link({auth_payload, from, phx_socket}) do
-    hibernate_after = phx_socket.endpoint.config(:live_view)[:hibernate_after] || 15000
+    with {:ok, pid} <- start_link({phx_socket.endpoint, from}) do
+      send(pid, {Phoenix.Channel, auth_payload, from, phx_socket})
+      {:ok, pid}
+    end
+  end
+
+  def start_link({endpoint, from}) do
+    hibernate_after = endpoint.config(:live_view)[:hibernate_after] || 15000
     opts = [hibernate_after: hibernate_after]
-    GenServer.start_link(__MODULE__, {auth_payload, from, phx_socket}, opts)
+    GenServer.start_link(__MODULE__, from, opts)
   end
 
   def send_update(module, id, assigns) do
@@ -24,17 +33,21 @@ defmodule Phoenix.LiveView.Channel do
   end
 
   @impl true
-  def init(triplet) do
-    send(self(), {:mount, __MODULE__})
-    {:ok, triplet}
+  def init({pid, _ref}) do
+    {:ok, Process.monitor(pid)}
   end
 
   @impl true
-  def handle_info({:mount, __MODULE__}, triplet) do
-    mount(triplet)
+  def handle_info({Phoenix.Channel, auth_payload, from, phx_socket}, ref) do
+    Process.demonitor(ref)
+    mount(auth_payload, from, phx_socket)
   rescue
     # Normalize exceptions for better client debugging
     e -> reraise(e, __STACKTRACE__)
+  end
+
+  def handle_info({:DOWN, ref, _, _, _reason}, ref) do
+    {:stop, {:shutdown, :closed}, ref}
   end
 
   def handle_info({:DOWN, _, _, transport_pid, _reason}, %{transport_pid: transport_pid} = state) do
@@ -53,10 +66,10 @@ defmodule Phoenix.LiveView.Channel do
 
   def handle_info(%Message{topic: topic, event: "link"} = msg, %{topic: topic} = state) do
     %{socket: socket} = state
-    %{view: view, router: router} = socket
+    %{view: view} = socket
     %{"url" => url} = msg.payload
 
-    case Utils.live_link_info!(router, view, url) do
+    case Utils.live_link_info!(socket, view, url) do
       {:internal, params, action, _} ->
         socket = socket |> assign_action(action) |> Utils.clear_flash()
 
@@ -201,7 +214,7 @@ defmodule Phoenix.LiveView.Channel do
 
       socket.root_pid != self() or is_nil(router) ->
         # Let the callback fail for the usual reasons
-        Utils.live_link_info!(nil, view, url)
+        Utils.live_link_info!(%{socket | router: nil}, view, url)
 
       params == :not_mounted_at_router ->
         raise "cannot invoke handle_params/3 for #{inspect(view)} because #{inspect(view)}" <>
@@ -519,28 +532,57 @@ defmodule Phoenix.LiveView.Channel do
 
   ## Mount
 
-  defp mount({%{"session" => session_token} = params, from, phx_socket}) do
+  defp mount(%{"session" => session_token} = params, from, phx_socket) do
     case Static.verify_session(phx_socket.endpoint, session_token, params["static"]) do
       {:ok, verified} ->
-        verified_mount(verified, params, from, phx_socket)
+        %{private: %{connect_info: connect_info}} = phx_socket
 
-      {:error, reason} when reason in [:outdated, :expired] ->
-        GenServer.reply(from, {:error, %{reason: "outdated"}})
-        {:stop, :shutdown, :no_state}
+        case connect_info do
+          %{session: nil} ->
+            Logger.debug("""
+            LiveView session was misconfigured or the user token is outdated.
 
-      {:error, reason} ->
-        Logger.error(
-          "Mounting #{phx_socket.topic} failed while verifying session with: #{inspect(reason)}"
-        )
+            1) Ensure your session configuration in your endpoint is in a module attribute:
 
-        GenServer.reply(from, {:error, %{reason: "badsession"}})
+                @session_options [
+                  ...
+                ]
+
+            2) Change the `plug Plug.Session` to use said attribute:
+
+                plug Plug.Session, @session_options
+
+            3) Also pass the `@session_options` to your LiveView socket:
+
+                socket "/live", Phoenix.LiveView.Socket,
+                  websocket: [connect_info: [session: @session_options]]
+
+            4) Define the CSRF meta tag inside the `<head>` tag in your layout:
+
+                <%= csrf_meta_tag() %>
+
+            5) Pass it forward in your app.js:
+
+                let csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content");
+                let liveSocket = new LiveSocket("/live", Socket, {params: {_csrf_token: csrfToken}});
+            """)
+
+            GenServer.reply(from, {:error, %{reason: "stale"}})
+            {:stop, :shutdown, :no_state}
+
+          %{} ->
+            verified_mount(verified, params, from, phx_socket, connect_info)
+        end
+
+      {:error, _reason} ->
+        GenServer.reply(from, {:error, %{reason: "stale"}})
         {:stop, :shutdown, :no_state}
     end
   end
 
-  defp mount({%{}, from, phx_socket}) do
+  defp mount(%{}, from, phx_socket) do
     Logger.error("Mounting #{phx_socket.topic} failed because no session was provided")
-    GenServer.reply(from, {:error, %{reason: "nosession"}})
+    GenServer.reply(from, {:error, %{reason: "stale"}})
     {:stop, :shutdown, :no_session}
   end
 
@@ -557,7 +599,7 @@ defmodule Phoenix.LiveView.Channel do
     end
   end
 
-  defp verified_mount(verified, params, from, phx_socket) do
+  defp verified_mount(verified, params, from, phx_socket, connect_info) do
     %{
       id: id,
       view: view,
@@ -576,13 +618,13 @@ defmodule Phoenix.LiveView.Channel do
 
     %Phoenix.Socket{
       endpoint: endpoint,
-      private: %{session: socket_session},
       transport_pid: transport_pid
     } = phx_socket
 
     # Optional verified parts
     router = verified[:router]
     flash = verify_flash(endpoint, verified, params)
+    socket_session = connect_info[:session] || %{}
 
     Process.monitor(transport_pid)
     load_csrf_token(endpoint, socket_session)
@@ -596,25 +638,27 @@ defmodule Phoenix.LiveView.Channel do
       _ -> Process.put(:"$callers", [transport_pid])
     end
 
+    socket = %Socket{
+      endpoint: endpoint,
+      view: view,
+      root_view: root_view,
+      connected?: true,
+      parent_pid: parent,
+      root_pid: root || self(),
+      id: id,
+      router: router
+    }
+
     {params, parsed_uri, action} =
-      case router && url && Utils.live_link_info!(router, view, url) do
+      case router && url && Utils.live_link_info!(socket, view, url) do
         {:internal, params, action, parsed_uri} -> {params, parsed_uri, action}
         _ -> {:not_mounted_at_router, :not_mounted_at_router, nil}
       end
 
     socket =
       Utils.configure_socket(
-        %Socket{
-          endpoint: endpoint,
-          view: view,
-          root_view: root_view,
-          connected?: true,
-          parent_pid: parent,
-          root_pid: root || self(),
-          id: id,
-          router: router
-        },
-        mount_private(parent, assign_new, connect_params),
+        socket,
+        mount_private(parent, assign_new, connect_params, connect_info),
         action,
         flash
       )
@@ -634,19 +678,21 @@ defmodule Phoenix.LiveView.Channel do
     end
   end
 
-  defp mount_private(nil, assign_new, connect_params) do
+  defp mount_private(nil, assign_new, connect_params, connect_info) do
     %{
       connect_params: connect_params,
+      connect_info: connect_info,
       assign_new: {%{}, assign_new}
     }
   end
 
-  defp mount_private(parent, assign_new, connect_params) do
+  defp mount_private(parent, assign_new, connect_params, connect_info) do
     parent_assigns = sync_with_parent(parent, assign_new)
 
     # Child live views always ignore the layout on `:use`.
     %{
       connect_params: connect_params,
+      connect_info: connect_info,
       assign_new: {parent_assigns, assign_new},
       phoenix_live_layout: false
     }

@@ -9,8 +9,6 @@ See the hexdocs at `https://hexdocs.pm/phoenix_live_view` for documentation.
 
 import morphdom from "morphdom"
 
-const CLIENT_OUTDATED = "outdated"
-const JOIN_CRASHED = "join crashed"
 const CONSECUTIVE_RELOADS = "consecutive-reloads"
 const MAX_RELOADS = 10
 const RELOAD_JITTER = [1000, 3000]
@@ -22,6 +20,7 @@ const PHX_EVENT_CLASSES = [
 ]
 const PHX_COMPONENT = "data-phx-component"
 const PHX_LIVE_LINK = "data-phx-link"
+const PHX_TRACK_STATIC = "track-static"
 const PHX_LINK_STATE = "data-phx-link-state"
 const PHX_REF = "data-phx-ref"
 const PHX_SKIP = "data-phx-skip"
@@ -278,7 +277,7 @@ export class Rendered {
  *
  * @param {Object} [opts] - Optional configuration. Outside of keys listed below, all
  * configuration is passed directly to the Phoenix Socket constructor.
- * @param {Function} [opts.defaults] - The optional defaults to use for various bindings,
+ * @param {Object} [opts.defaults] - The optional defaults to use for various bindings,
  * such as `phx-debounce`. Supports the following keys:
  *
  *   - debounce - the millisecond phx-debounce time. Defaults 300
@@ -291,12 +290,33 @@ export class Rendered {
  *
  * @param {string} [opts.bindingPrefix] - The optional prefix to use for all phx DOM annotations.
  * Defaults to "phx-".
- * @param {string} [opts.hooks] - The optional object for referencing LiveView hook callbacks.
+ * @param {Object} [opts.hooks] - The optional object for referencing LiveView hook callbacks.
  * @param {integer} [opts.loaderTimeout] - The optional delay in milliseconds to wait before apply
  * loading states.
  * @param {Function} [opts.viewLogger] - The optional function to log debug information. For example:
  *
  *     (view, kind, msg, obj) => console.log(`${view.id} ${kind}: ${msg} - `, obj)
+ *
+ * @param {Object} [opts.metadata] - The optional object mapping event names to functions for
+ * populating event metadata. For example:
+ *
+ *     metadata: {
+ *       click: (e, el) => {
+ *         return {
+ *           ctrlKey: e.ctrlKey,
+ *           metaKey: e.metaKey,
+ *           detail: e.detail || 1,
+ *         }
+ *       },
+ *       keydown: (e, el) => {
+ *         return {
+ *           key: e.key,
+ *           ctrlKey: e.ctrlKey,
+ *           metaKey: e.metaKey,
+ *           shiftKey: e.shiftKey
+ *         }
+ *       }
+ *     }
 */
 export class LiveSocket {
   constructor(url, phxSocket, opts = {}){
@@ -315,6 +335,7 @@ export class LiveSocket {
     this.opts = opts
     this.params = closure(opts.params || {})
     this.viewLogger = opts.viewLogger
+    this.metadataCallbacks = opts.metadata || {}
     this.defaults = Object.assign(clone(DEFAULTS), opts.defaults || {})
     this.activeElement = null
     this.prevActive = null
@@ -521,7 +542,7 @@ export class LiveSocket {
 
   withinTargets(el, phxTarget, callback){
     if(/^(0|[1-9](\d?)+)$/.test(phxTarget)){
-      let myselfTarget = el
+      let myselfTarget = el || DOM.findFirstComponentNode(document, phxTarget)
       if(!myselfTarget){ throw new Error(`no phx-target's found matching @myself of ${phxTarget}`) }
       this.owner(myselfTarget , view => callback(view, myselfTarget))
     } else {
@@ -608,34 +629,27 @@ export class LiveSocket {
     this.bindForms()
     this.bind({keyup: "keyup", keydown: "keydown"}, (e, type, view, target, targetCtx, phxEvent, phxTarget) => {
       let matchKey = target.getAttribute(this.binding(PHX_KEY))
-      if(matchKey && matchKey.toLowerCase() !== e.key.toLowerCase()){ return }
+      let pressedKey = e.key && e.key.toLowerCase() // chrome clicked autocompletes send a keydown without key
+      if(matchKey && matchKey.toLowerCase() !== pressedKey){ return }
 
-      view.pushKey(target, targetCtx, type, phxEvent, {
-        altGraphKey: e.altGraphKey,
-        altKey: e.altKey,
-        code: e.code,
-        ctrlKey: e.ctrlKey,
-        key: e.key,
-        keyIdentifier: e.keyIdentifier,
-        keyLocation: e.keyLocation,
-        location: e.location,
-        metaKey: e.metaKey,
-        repeat: e.repeat,
-        shiftKey: e.shiftKey
-      })
+      view.pushKey(target, targetCtx, type, phxEvent, {key: e.key, ...this.eventMeta(type, e, target)})
     })
     this.bind({blur: "focusout", focus: "focusin"}, (e, type, view, targetEl, targetCtx, phxEvent, phxTarget) => {
       if(!phxTarget){
-        view.pushEvent(type, targetEl, targetCtx, phxEvent, {type: type})
+        view.pushEvent(type, targetEl, targetCtx, phxEvent, this.eventMeta(type, e, targetEl))
       }
     })
     this.bind({blur: "blur", focus: "focus"}, (e, type, view, targetEl, targetCtx, phxEvent, phxTarget) => {
       // blur and focus are triggered on document and window. Discard one to avoid dups
       if(phxTarget && !phxTarget !== "window"){
-        view.pushEvent(type, targetEl, targetCtx, phxEvent, {type: e.type})
+        view.pushEvent(type, targetEl, targetCtx, phxEvent, this.eventMeta(type, e, targetEl))
       }
     })
+  }
 
+  eventMeta(eventName, e, targetEl){
+    let callback = this.metadataCallbacks[eventName]
+    return callback ? callback(e, targetEl) : {}
   }
 
   setPendingLink(href){
@@ -700,25 +714,9 @@ export class LiveSocket {
         if(!phxEvent){ return }
         if(target.getAttribute("href") === "#"){ e.preventDefault() }
 
-        let meta = {
-          altKey: e.altKey,
-          shiftKey: e.shiftKey,
-          ctrlKey: e.ctrlKey,
-          metaKey: e.metaKey,
-          x: e.x || e.clientX,
-          y: e.y || e.clientY,
-          pageX: e.pageX,
-          pageY: e.pageY,
-          screenX: e.screenX,
-          screenY: e.screenY,
-          offsetX: e.offsetX,
-          offsetY: e.offsetY,
-          detail: e.detail || 1,
-        }
-
         this.debounce(target, e, () => {
           this.withinOwners(target, (view, targetCtx) => {
-            view.pushEvent("click", target, targetCtx, phxEvent, meta)
+            view.pushEvent("click", target, targetCtx, phxEvent, this.eventMeta("click", e, target))
           })
         })
       }, capture)
@@ -1038,6 +1036,9 @@ export let DOM = {
             el.form.removeEventListener("submit", clearTimer)
           }
           el.removeEventListener("blur", this.private(el, DEBOUNCE_BLUR_TIMER))
+          if (!throttle) {
+            el.removeEventListener("keydown", clearTimer)
+          }
           this.deletePrivate(el, DEBOUNCE_BLUR_TIMER)
           this.deletePrivate(el, DEBOUNCE_TIMER)
           if(!throttle){ callback() }
@@ -1048,6 +1049,9 @@ export let DOM = {
         }
         this.putPrivate(el, DEBOUNCE_TIMER, setTimeout(debounceCallback, timeout))
         el.addEventListener("blur", blurCallback)
+        if (!throttle) {
+          el.addEventListener("keydown", clearTimer)
+        }
         this.putPrivate(el, DEBOUNCE_BLUR_TIMER, blurCallback)
         if(el.form){
           el.form.addEventListener(PHX_CHANGE_EVENT, clearTimer)
@@ -1255,7 +1259,7 @@ class DOMPatch {
         onNodeDiscarded: (el) => { this.trackAfter("discarded", el) },
         onBeforeNodeDiscarded: (el) => {
           if(el.getAttribute && el.getAttribute(PHX_REMOVE) !== null){ return true }
-          if(DOM.isPhxUpdate(el.parentNode, phxUpdate, ["append", "prepend"])){ return false }
+          if(el.parentNode !== null && DOM.isPhxUpdate(el.parentNode, phxUpdate, ["append", "prepend"])){ return false }
           if(this.skipCIDSibling(el)){ return false }
           this.trackBefore("discarded", el)
           // nested view handling
@@ -1411,7 +1415,6 @@ export class View {
     this.flash = flash
     this.parent = parentView
     this.root = parentView ? parentView.root : this
-    this.gracefullyClosed = false
     this.el = el
     this.id = this.el.id
     this.view = this.el.getAttribute(PHX_VIEW)
@@ -1432,7 +1435,7 @@ export class View {
     this.channel = this.liveSocket.channel(`lv:${this.id}`, () => {
       return {
         url: this.href,
-        params: this.liveSocket.params(this.view),
+        params: this.connectParams(),
         session: this.getSession(),
         static: this.getStatic(),
         flash: this.flash,
@@ -1444,6 +1447,17 @@ export class View {
   }
 
   isMain(){ return this.liveSocket.main === this }
+
+  connectParams(){
+    let params = this.liveSocket.params(this.view)
+    let manifest =
+      DOM.all(document, `[${this.binding(PHX_TRACK_STATIC)}]`)
+      .map(node => node.src || node.href).filter(url => typeof(url) === "string")
+
+    if(manifest.length > 0){ params["_cache_static_manifest_latest"] = manifest }
+
+    return params
+  }
 
   name(){ return this.view }
 
@@ -1466,16 +1480,12 @@ export class View {
       callback()
       for(let id in this.viewHooks){ this.destroyHook(this.viewHooks[id]) }
     }
-    if(this.hasGracefullyClosed()){
-      this.log("destroyed", () => ["the server view has gracefully closed"])
-      onFinished()
-    } else {
-      this.log("destroyed", () => ["the child has been removed from the parent"])
-      this.channel.leave()
-        .receive("ok", onFinished)
-        .receive("error", onFinished)
-        .receive("timeout", onFinished)
-    }
+
+    this.log("destroyed", () => ["the child has been removed from the parent"])
+    this.channel.leave()
+      .receive("ok", onFinished)
+      .receive("error", onFinished)
+      .receive("timeout", onFinished)
   }
 
   setContainerClasses(...classes){
@@ -1541,18 +1551,6 @@ export class View {
   }
 
   dropPendingRefs(){ DOM.all(this.el, `[${PHX_REF}]`, el => el.removeAttribute(PHX_REF)) }
-
-  formsForRecovery(html){
-    let phxChange = this.binding("change")
-    let template = document.createElement("template")
-    template.innerHTML = html
-
-    return(
-      DOM.all(this.el, `form[${phxChange}], form[${this.binding("submit")}]`)
-         .filter(form => this.ownsElement(form))
-         .filter(form => template.content.querySelector(`form[${phxChange}="${form.getAttribute(phxChange)}"]`))
-    )
-  }
 
   onJoinComplete({live_patch}, html){
     if(this.joinCount > 1 || (this.parent && !this.parent.isJoinPending())){
@@ -1795,18 +1793,13 @@ export class View {
     this.onChannel("live_redirect", (redir) => this.onLiveRedirect(redir))
     this.onChannel("session", ({token}) => this.el.setAttribute(PHX_SESSION, token))
     this.channel.onError(reason => this.onError(reason))
-    this.channel.onClose(() => this.onGracefulClose())
+    this.channel.onClose(() => this.onError({reason: "closed"}))
   }
 
   destroyAllChildren(){
     for(let id in this.root.children[this.id]){
       this.getChildById(id).destroy()
     }
-  }
-
-  onGracefulClose(){
-    this.gracefullyClosed = true
-    this.destroyAllChildren()
   }
 
   onLiveRedirect(redir){
@@ -1829,8 +1822,6 @@ export class View {
 
   isDestroyed(){ return this.destroyed }
 
-  hasGracefullyClosed(){ return this.gracefullyClosed }
-
   join(callback){
     if(!this.parent){
       this.stopCallback = this.liveSocket.withPageLoading({to: this.href, kind: "initial"})
@@ -1845,14 +1836,11 @@ export class View {
   }
 
   onJoinError(resp){
-    if(resp.reason === CLIENT_OUTDATED){ return this.liveSocket.reloadWithJitter(this) }
-    if(resp.reason === JOIN_CRASHED){ return this.liveSocket.reloadWithJitter(this) }
     if(resp.redirect || resp.live_redirect){ this.channel.leave() }
     if(resp.redirect){ return this.onRedirect(resp.redirect) }
     if(resp.live_redirect){ return this.onLiveRedirect(resp.live_redirect) }
-    this.parent && this.parent.ackJoin(this)
-    this.displayError()
     this.log("error", () => ["unable to join", resp])
+    return this.liveSocket.reloadWithJitter(this)
   }
 
   onError(reason){

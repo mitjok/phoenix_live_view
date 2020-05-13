@@ -3,7 +3,22 @@
 ![Actions Status](https://github.com/phoenixframework/phoenix_live_view/workflows/CI/badge.svg)
 
 Phoenix LiveView enables rich, real-time user experiences
-with server-rendered HTML. [See the initial announcement](https://dockyard.com/blog/2018/12/12/phoenix-liveview-interactive-real-time-apps-no-need-to-write-javascript).
+with server-rendered HTML.
+
+After you [install Elixir](https://elixir-lang.org/install.html)
+in your machine, you can create your first LiveView app in two
+steps:
+
+    $ mix archive.install hex phx_new
+    $ mix phx.new demo --live
+
+## Official announcements
+
+News from the Phoenix team on LiveView:
+
+  * [Build a real-time Twitter clone with LiveView](https://www.phoenixframework.org/blog/build-a-real-time-twitter-clone-in-15-minutes-with-live-view-and-phoenix-1-5)
+
+  * [Initial announcement](https://dockyard.com/blog/2018/12/12/phoenix-liveview-interactive-real-time-apps-no-need-to-write-javascript)
 
 ## Learning
 
@@ -57,7 +72,7 @@ anywhere else:
     app can push events to users as those events happen anywhere in
     the system. Do you want to notify a user that their best friend
     just connected? This is easily done without a single-line of
-    JavaScript and with no extra external dependencies.
+    custom JavaScript and with no extra external dependencies.
 
   * LiveView performs diff tracking: whenever you change a value on
     the server, LiveView will send to the client only the values that
@@ -90,6 +105,10 @@ sure LiveView is ready for prime time. For example, you will find:
   * Fine-grained control for handling client events, DOM patching,
     rate limiting, and more
 
+  * Testing tools that allow you to write a confident test suite
+    without the complexity of running a whole browser alongside
+    your tests
+
 In other words, LiveView provides a rich feature set for great
 developer and user experiences.
 
@@ -110,6 +129,7 @@ import "mdn-polyfills/Object.assign"
 import "mdn-polyfills/CustomEvent"
 import "mdn-polyfills/String.prototype.startsWith"
 import "mdn-polyfills/Array.from"
+import "mdn-polyfills/Array.prototype.find"
 import "mdn-polyfills/NodeList.prototype.forEach"
 import "mdn-polyfills/Element.prototype.closest"
 import "mdn-polyfills/Element.prototype.matches"
