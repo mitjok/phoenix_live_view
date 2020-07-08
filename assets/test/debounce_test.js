@@ -10,7 +10,6 @@ let simulateInput = (input, val) => {
 
 let simulateKeyDown = (input, val) => {
   input.value = input.value + val;
-  DOM.dispatchEvent(input, "keydown")
   DOM.dispatchEvent(input, "input")
 }
 
@@ -19,9 +18,9 @@ let container = () => {
   div.innerHTML = `
   <form phx-change="validate" phx-submit="submit">
     <input type="text" name="blur" phx-debounce="blur" />
-    <input type="text" name="debounce-100" phx-debounce="100" />
-    <input type="text" name="throttle-100" phx-throttle="100" />
-    <button id="throttle-100" phx-throttle="100" />+</button>
+    <input type="text" name="debounce-200" phx-debounce="200" />
+    <input type="text" name="throttle-200" phx-throttle="200" />
+    <button id="throttle-200" phx-throttle="200" />+</button>
   </form>
   `
   return div
@@ -44,7 +43,7 @@ describe("debounce", function() {
 
   test("triggers debounce on input blur", async () => {
     let calls = 0
-    let el = container().querySelector("input[name=debounce-100]")
+    let el = container().querySelector("input[name=debounce-200]")
 
     el.addEventListener("input", e => {
       DOM.debounce(el, e, "phx-debounce", 0, "phx-throttle", 0, () => calls++)
@@ -57,9 +56,24 @@ describe("debounce", function() {
     expect(el.value).toBe("three")
   })
 
+  test("triggers debounce on input blur caused by tab", async () => {
+    let calls = 0
+    let el = container().querySelector("input[name=debounce-200]")
+
+    el.addEventListener("input", e => {
+      DOM.debounce(el, e, "phx-debounce", 0, "phx-throttle", 0, () => calls++)
+    })
+    simulateInput(el, "one")
+    simulateInput(el, "two")
+    el.dispatchEvent(new KeyboardEvent("keydown", {bubbles: true, cancelable: true, key: "Tab"}))
+    DOM.dispatchEvent(el, "blur")
+    expect(calls).toBe(1)
+    expect(el.value).toBe("two")
+  })
+
   test("triggers on timeout", done => {
     let calls = 0
-    let el = container().querySelector("input[name=debounce-100]")
+    let el = container().querySelector("input[name=debounce-200]")
 
     el.addEventListener("input", e => {
       DOM.debounce(el, e, "phx-debounce", 100, "phx-throttle", 200, () => calls++)
@@ -67,18 +81,18 @@ describe("debounce", function() {
     simulateKeyDown(el, "1")
     simulateKeyDown(el, "2")
     simulateKeyDown(el, "3")
-    after(50, () => {
+    after(100, () => {
       expect(calls).toBe(0)
       simulateKeyDown(el, "4")
-      after(50, () => {
+      after(75, () => {
         expect(calls).toBe(0)
-        after(50, () => {
+        after(250, () => {
           expect(calls).toBe(1)
           expect(el.value).toBe("1234")
           simulateKeyDown(el, "5")
           simulateKeyDown(el, "6")
           simulateKeyDown(el, "7")
-          after(150, () => {
+          after(250, () => {
             expect(calls).toBe(2)
             expect(el.value).toBe("1234567")
             done()
@@ -90,7 +104,7 @@ describe("debounce", function() {
 
   test("uses default when value is blank", done => {
     let calls = 0
-    let el = container().querySelector("input[name=debounce-100]")
+    let el = container().querySelector("input[name=debounce-200]")
     el.setAttribute("phx-debounce", "")
 
     el.addEventListener("input", e => {
@@ -105,7 +119,7 @@ describe("debounce", function() {
       simulateInput(el, "four")
       simulateInput(el, "five")
       simulateInput(el, "six")
-      after(600, () => {
+      after(1200, () => {
         expect(calls).toBe(1)
         expect(el.value).toBe("six")
         done()
@@ -113,34 +127,10 @@ describe("debounce", function() {
     })
   })
 
-
-  test("cancels trigger on phx-change", done => {
-    let calls = 0
-    let el = container().querySelector("input[name=debounce-100]")
-
-    el.addEventListener("input", e => {
-      DOM.debounce(el, e, "phx-debounce", 100, "phx-throttle", 200, () => calls++)
-    })
-    el.form.addEventListener("phx-change", () => {
-      el.value = "phx-changed"
-    })
-    simulateInput(el, "changed")
-    DOM.dispatchEvent(el.form, "phx-change")
-    after(100, () => {
-      expect(calls).toBe(0)
-      expect(el.value).toBe("phx-changed")
-      simulateInput(el, "changed again")
-      after(100, () => {
-        expect(calls).toBe(1)
-        expect(el.value).toBe("changed again")
-        done()
-      })
-    })
-  })
-
   test("cancels trigger on submit", done => {
     let calls = 0
-    let el = container().querySelector("input[name=debounce-100]")
+    let parent = container()
+    let el = parent.querySelector("input[name=debounce-200]")
 
     el.addEventListener("input", e => {
       DOM.debounce(el, e, "phx-debounce", 100, "phx-throttle", 200, () => calls++)
@@ -154,7 +144,7 @@ describe("debounce", function() {
       expect(calls).toBe(0)
       expect(el.value).toBe("submitted")
       simulateInput(el, "changed again")
-      after(100, () => {
+      after(250, () => {
         expect(calls).toBe(1)
         expect(el.value).toBe("changed again")
         done()
@@ -166,7 +156,7 @@ describe("debounce", function() {
 describe("throttle", function() {
   test("triggers immediately, then on timeout", done => {
     let calls = 0
-    let el = container().querySelector("#throttle-100")
+    let el = container().querySelector("#throttle-200")
 
     el.addEventListener("click", e => {
       DOM.debounce(el, e, "phx-debounce", 100, "phx-throttle", 200, () => {
@@ -179,13 +169,13 @@ describe("throttle", function() {
     DOM.dispatchEvent(el, "click")
     expect(calls).toBe(1)
     expect(el.innerText).toBe("now:1")
-    after(100, () => {
+    after(250, () => {
       expect(calls).toBe(1)
       expect(el.innerText).toBe("now:1")
       DOM.dispatchEvent(el, "click")
       DOM.dispatchEvent(el, "click")
       DOM.dispatchEvent(el, "click")
-      after(100, () => {
+      after(250, () => {
         expect(calls).toBe(2)
         expect(el.innerText).toBe("now:2")
         done()
@@ -195,7 +185,7 @@ describe("throttle", function() {
 
   test("uses default when value is blank", done => {
     let calls = 0
-    let el = container().querySelector("#throttle-100")
+    let el = container().querySelector("#throttle-200")
     el.setAttribute("phx-throttle", "")
 
     el.addEventListener("click", e => {
@@ -209,13 +199,13 @@ describe("throttle", function() {
     DOM.dispatchEvent(el, "click")
     expect(calls).toBe(1)
     expect(el.innerText).toBe("now:1")
-    after(100, () => {
+    after(200, () => {
       expect(calls).toBe(1)
       expect(el.innerText).toBe("now:1")
       DOM.dispatchEvent(el, "click")
       DOM.dispatchEvent(el, "click")
       DOM.dispatchEvent(el, "click")
-      after(100, () => {
+      after(250, () => {
         expect(calls).toBe(1)
         expect(el.innerText).toBe("now:1")
         done()
@@ -223,34 +213,9 @@ describe("throttle", function() {
     })
   })
 
-
-  test("cancels trigger on phx-change", done => {
-    let calls = 0
-    let el = container().querySelector("input[name=throttle-100]")
-    let otherInput = el.form.querySelector("input[name=debounce-100]")
-
-    el.addEventListener("input", e => {
-      DOM.debounce(el, e, "phx-debounce", 100, "phx-throttle", 200, () => calls++)
-    })
-    el.form.addEventListener("phx-change", () => {
-      el.value = "phx-changed"
-    })
-    simulateInput(el, "changed")
-    simulateInput(el, "changed2")
-    DOM.dispatchEvent(el.form, "phx-change", {triggeredBy: otherInput})
-    expect(calls).toBe(1)
-    expect(el.value).toBe("phx-changed")
-    simulateInput(el, "changed3")
-    after(100, () => {
-      expect(calls).toBe(2)
-      expect(el.value).toBe("changed3")
-      done()
-    })
-  })
-
   test("cancels trigger on submit", done => {
     let calls = 0
-    let el = container().querySelector("input[name=throttle-100]")
+    let el = container().querySelector("input[name=throttle-200]")
 
     el.addEventListener("input", e => {
       DOM.debounce(el, e, "phx-debounce", 100, "phx-throttle", 200, () => calls++)

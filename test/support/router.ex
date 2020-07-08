@@ -57,6 +57,7 @@ defmodule Phoenix.LiveViewTest.Router do
     live "/shuffle", ShuffleLive
     live "/components", WithComponentLive
     live "/assigns-not-in-socket", AssignsNotInSocketLive
+    live "/errors", ErrorsLive
 
     # integration layout
     scope "/" do
@@ -77,6 +78,9 @@ defmodule Phoenix.LiveViewTest.Router do
     # integration flash
     live "/flash-root", FlashLive
     live "/flash-child", FlashChildLive
+
+    # integration events
+    live "/events", EventsLive
   end
 
   scope "/", as: :user_defined_metadata, alias: Phoenix.LiveViewTest do

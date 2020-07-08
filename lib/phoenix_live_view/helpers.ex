@@ -16,8 +16,8 @@ defmodule Phoenix.LiveView.Helpers do
   When navigating to the current LiveView, `c:handle_params/3` is
   immediately invoked to handle the change of params and URL state.
   Then the new state is pushed to the client, without reloading the
-  whole page. For live redirects to another LiveView, use
-  `live_redirect/2`.
+  whole page while also maintaining the current scroll position.
+  For live redirects to another LiveView, use `live_redirect/2`.
 
   ## Options
 
@@ -29,6 +29,7 @@ defmodule Phoenix.LiveView.Helpers do
 
   ## Examples
 
+      <%= live_patch "home", to: Routes.page_path(@socket, :index) %>
       <%= live_patch "next", to: Routes.live_path(@socket, MyLive, @page + 1) %>
       <%= live_patch to: Routes.live_path(@socket, MyLive, dir: :asc), replace: false do %>
         Sort By Price
@@ -76,6 +77,7 @@ defmodule Phoenix.LiveView.Helpers do
 
   ## Examples
 
+      <%= live_redirect "home", to: Routes.page_path(@socket, :index) %>
       <%= live_redirect "next", to: Routes.live_path(@socket, MyLive, @page + 1) %>
       <%= live_redirect to: Routes.live_path(@socket, MyLive, dir: :asc), replace: false do %>
         Sort By Price
@@ -121,18 +123,18 @@ defmodule Phoenix.LiveView.Helpers do
   ## Options
 
     * `:session` - the map of extra session data to be serialized
-      and sent to the client. Note all session data currently in
+      and sent to the client. Note that all session data currently in
       the connection is automatically available in LiveViews. You
-      can use this option to provide extra data. Also note the keys
+      can use this option to provide extra data. Also note that the keys
       in the session are strings keys, as a reminder that data has
       to be serialized first.
-    * `:container` - the optional tuple for the HTML tag and DOM
+    * `:container` - an optional tuple for the HTML tag and DOM
       attributes to be used for the LiveView container. For example:
       `{:li, style: "color: blue;"}`. By default it uses the module
-      definition container. See the "Containers" section for more
+      definition container. See the "Containers" section below for more
       information.
     * `:id` - both the DOM ID and the ID to uniquely identify a LiveView.
-      One `:id` is automatically generated when rendering root LiveViews
+      An `:id` is automatically generated when rendering root LiveViews
       but it is a required option when rendering a child LiveView.
     * `:router` - an optional router that enables this LiveView to
       perform live navigation. Only a single LiveView in a page may
@@ -200,7 +202,7 @@ defmodule Phoenix.LiveView.Helpers do
       <%= live_component(@socket, MyApp.WeatherComponent, id: "thermostat", city: "Kraków") %>
 
   Note the `:id` won't necessarily be used as the DOM ID.
-  That's up to the component. However, note the `:id` has
+  That's up to the component. However, note that the `:id` has
   a special meaning: whenever an `:id` is given, the component
   becomes stateful. Otherwise, `:id` is always set to `nil`.
   """

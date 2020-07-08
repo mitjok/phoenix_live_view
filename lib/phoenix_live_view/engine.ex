@@ -149,7 +149,7 @@ defmodule Phoenix.LiveView.Engine do
   @moduledoc ~S"""
   The `.leex` (Live EEx) template engine that tracks changes.
 
-  On the docs below, we will explain how it works internally.
+  In the documentation below, we will explain how it works internally.
   For user-facing documentation, see `Phoenix.LiveView`.
 
   ## Phoenix.LiveView.Rendered
@@ -249,7 +249,7 @@ defmodule Phoenix.LiveView.Engine do
   struct with the static parts, that are shared across all
   points, and a list of dynamics to be interpolated inside
   the static parts. If `@points` is a list with `%{x: 1, y: 2}`
-  and `%{x: 3, y: 4}`, the expression above would return:
+  and `%{x: 3, y: 4}`, the above expression would return:
 
       %Phoenix.LiveView.Comprehension{
         static: ["\n  x: ", "\n  y: ", "\n"],
@@ -261,7 +261,7 @@ defmodule Phoenix.LiveView.Engine do
 
   This allows `.leex` templates to drastically optimize
   the data sent by comprehensions, as the static parts
-  are emitted once, regardless of the number of items.
+  are emitted only once, regardless of the number of items.
 
   The list of dynamics is always a list of iodatas or components,
   as we don't perform change tracking inside the comprehensions
@@ -355,7 +355,7 @@ defmodule Phoenix.LiveView.Engine do
          dynamic = fn track_changes? ->
            changed =
              case var!(assigns) do
-               %{socket: %{changed: changed}} when track_changes? -> changed
+               %{__changed__: changed} when track_changes? -> changed
                _ -> nil
              end
 
@@ -442,7 +442,7 @@ defmodule Phoenix.LiveView.Engine do
        when is_atom(macro) do
     if classify_taint(macro, args) == :live do
       {args, [opts]} = Enum.split(args, -1)
-      {args, vars, _} = analyze_list(args, vars, assigns, [])
+      {args, vars, _} = analyze_with_restricted_vars(args, vars, assigns)
 
       opts =
         for {key, value} <- opts do
@@ -656,6 +656,12 @@ defmodule Phoenix.LiveView.Engine do
     {expr, vars, assigns}
   end
 
+  # Also skip special variables
+  defp analyze({name, _, context} = expr, vars, assigns)
+       when name in [:__MODULE__, :__ENV__, :__STACKTRACE__, :__DIR__] and is_atom(context) do
+    {expr, vars, assigns}
+  end
+
   # Vars always taint unless we are in restricted mode.
   defp analyze({name, _, context} = expr, {:restricted, map}, assigns)
        when is_atom(name) and is_atom(context) do
@@ -686,11 +692,7 @@ defmodule Phoenix.LiveView.Engine do
           {_, map} -> {expr, {:tainted, map}, assigns}
         end
 
-      :never ->
-        {args, vars, assigns} = analyze_with_restricted_vars(args, vars, assigns)
-        {{left, meta, args}, vars, assigns}
-
-      :live ->
+      :component ->
         {args, [opts]} = Enum.split(args, -1)
         {args, vars, assigns} = analyze_list(args, vars, assigns, [])
         {opts, vars, assigns} = analyze_with_restricted_vars(opts, vars, assigns)
@@ -699,6 +701,11 @@ defmodule Phoenix.LiveView.Engine do
       :none ->
         {left, vars, assigns} = analyze(left, vars, assigns)
         {args, vars, assigns} = analyze_list(args, vars, assigns, [])
+        {{left, meta, args}, vars, assigns}
+
+      # :never or :live
+      _ ->
+        {args, vars, assigns} = analyze_with_restricted_vars(args, vars, assigns)
         {{left, meta, args}, vars, assigns}
     end
   end
@@ -869,14 +876,19 @@ defmodule Phoenix.LiveView.Engine do
     end
   end
 
+  # For case/if/unless, we are not leaking the variable given as argument,
+  # such as `if var = ... do`. This does not follow Elixir semantics, but
+  # yields better optimizations.
   defp classify_taint(:case, [_, _]), do: :live
   defp classify_taint(:if, [_, _]), do: :live
   defp classify_taint(:unless, [_, _]), do: :live
   defp classify_taint(:cond, [_]), do: :live
   defp classify_taint(:try, [_]), do: :live
   defp classify_taint(:receive, [_]), do: :live
-  defp classify_taint(:live_component, [_, _, [do: _]]), do: :live
-  defp classify_taint(:live_component, [_, _, _, [do: _]]), do: :live
+  defp classify_taint(:with, _), do: :live
+
+  defp classify_taint(:live_component, [_, _, [do: _]]), do: :component
+  defp classify_taint(:live_component, [_, _, _, [do: _]]), do: :component
 
   defp classify_taint(:alias, [_]), do: :always
   defp classify_taint(:import, [_]), do: :always
@@ -886,7 +898,6 @@ defmodule Phoenix.LiveView.Engine do
   defp classify_taint(:require, [_, _]), do: :always
 
   defp classify_taint(:&, [_]), do: :never
-  defp classify_taint(:with, _), do: :never
   defp classify_taint(:for, _), do: :never
   defp classify_taint(:fn, _), do: :never
 

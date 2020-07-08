@@ -230,6 +230,12 @@ defmodule Phoenix.LiveView.EngineTest do
       assert changed(template, %{}, %{}) == ["3", "3"]
     end
 
+    test "does not render dynamic for special variables" do
+      template = "<%= __MODULE__ %>"
+      assert changed(template, %{}, nil) == [""]
+      assert changed(template, %{}, %{}) == [nil]
+    end
+
     test "renders dynamic if it has variables from assigns" do
       template = "<%= foo = @foo %><%= foo %>"
       assert changed(template, %{foo: 123}, nil) == ["123", "123"]
@@ -371,6 +377,18 @@ defmodule Phoenix.LiveView.EngineTest do
 
       assert changed(template, %{foo: 123, bar: false}, %{bar: true}) ==
                [""]
+    end
+
+    test "converts if-do with var into rendered" do
+      template = "<%= if var = @foo do %>one<%= var %>two<% end %>"
+
+      assert [%Rendered{dynamic: ["true"], static: ["one", "two"]}] =
+               changed(template, %{foo: true}, nil)
+
+      assert changed(template, %{foo: true}, %{}) ==
+               [nil]
+
+      assert [""] = changed(template, %{foo: false}, %{foo: true})
     end
 
     test "converts if-do-else into rendered with dynamic condition" do
@@ -735,8 +753,7 @@ defmodule Phoenix.LiveView.EngineTest do
   end
 
   defp changed(string, assigns, changed, track_changes? \\ true) do
-    socket = %{changed: changed}
-    %{dynamic: dynamic} = eval(string, Map.put(assigns, :socket, socket))
+    %{dynamic: dynamic} = eval(string, Map.put(assigns, :__changed__, changed))
     expand_dynamic(dynamic, track_changes?)
   end
 
