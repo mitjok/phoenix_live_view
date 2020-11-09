@@ -35,7 +35,7 @@ defmodule Phoenix.LiveView.Router do
 
       live "/articles", ArticleLive.Index, :index
       live "/articles/new", ArticleLive.Index, :new
-      live "/articles/1/edit", ArticleLive.Index, :edit
+      live "/articles/:id/edit", ArticleLive.Index, :edit
 
   When an action is given, the generated route helpers are named after
   the LiveView itself (in the same way as for a controller). For the example
@@ -157,18 +157,18 @@ defmodule Phoenix.LiveView.Router do
       |> Keyword.put(:router, router)
       |> Keyword.put(:action, action)
 
-    {as_helper, as_action} = inferred_as(live_view, action)
+    {as_helper, as_action} = inferred_as(live_view, opts[:as], action)
 
     {as_action,
      alias: false,
-     as: opts[:as] || as_helper,
+     as: as_helper,
      private: Map.put(private, :phoenix_live_view, {live_view, opts}),
      metadata: Map.put(metadata, :phoenix_live_view, {live_view, action})}
   end
 
-  defp inferred_as(live_view, nil), do: {:live, live_view}
+  defp inferred_as(live_view, as, nil), do: {as || :live, live_view}
 
-  defp inferred_as(live_view, action) do
+  defp inferred_as(live_view, nil, action) do
     live_view
     |> Module.split()
     |> Enum.drop_while(&(not String.ends_with?(&1, "Live")))
@@ -186,6 +186,8 @@ defmodule Phoenix.LiveView.Router do
         {String.to_atom(as), action}
     end
   end
+
+  defp inferred_as(_live_view, as, action), do: {as, action}
 
   defp cookie_flash(%Plug.Conn{cookies: %{@cookie_key => token}} = conn) do
     endpoint = Phoenix.Controller.endpoint_module(conn)

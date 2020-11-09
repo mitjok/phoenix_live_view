@@ -20,8 +20,8 @@ saving, your template would use both `phx_change` and `phx_submit` bindings:
       <%= submit "Save" %>
     </form>
 
-*Reminder*: `form_for/3` is a `Phoenix.HTML` helper. Don't forget to include
-`use Phoenix.HTML` at the top of your LiveView, if using `Phoenix.HTML` helpers.
+*Reminder*: [`form_for/3`](`Phoenix.HTML.Form.form_for/3`) is a `Phoenix.HTML` helper.
+Don't forget to include `use Phoenix.HTML` at the top of your LiveView, if using `Phoenix.HTML` helpers.
 Also, if using `error_tag/2`, don't forget to `import MyAppWeb.ErrorHelpers`.
 
 Next, your LiveView picks up the events in `handle_event` callbacks:
@@ -56,8 +56,8 @@ Next, your LiveView picks up the events in `handle_event` callbacks:
 
 The validate callback simply updates the changeset based on all form input
 values, then assigns the new changeset to the socket. If the changeset
-changes, such as generating new errors, `c:render/1` is invoked and
-the form is re-rendered.
+changes, such as generating new errors, [`render/1`](`c:Phoenix.LiveView.render/1`)
+is invoked and the form is re-rendered.
 
 Likewise for `phx-submit` bindings, the same callback is invoked and
 persistence is attempted. On success, a `:noreply` tuple is returned and the
@@ -126,6 +126,19 @@ requires explicitly setting the `:value` in your markup, for example:
     <%= error_tag f, :password %>
     <%= error_tag f, :password_confirmation %>
 
+## File inputs
+
+LiveView forms support [reactive file inputs](uploads.md),
+including drag and drop support via the `phx-drop-target`
+attribute:
+
+    <div class="container" phx-drop-target="<%= @uploads.avatar.ref %>">
+        ...
+        <%= live_file_input @uploads.avatar %>
+    </div>
+
+See `Phoenix.LiveView.Helpers.live_file_input/2` for more.
+
 ## Submitting the form action over HTTP
 
 The `phx-trigger-action` attribute can be added to a form to trigger a standard
@@ -151,6 +164,8 @@ fields on next render:
           {:noreply, assign(socket, changeset: changeset)}
         end
     end
+
+Once `phx-trigger-action` is true, LiveView disconnects and then submits the form.
 
 ## Recovery following crashes or disconnects
 

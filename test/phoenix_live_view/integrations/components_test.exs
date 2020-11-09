@@ -14,6 +14,12 @@ defmodule Phoenix.LiveView.ComponentTest do
      conn: Plug.Test.init_test_session(Phoenix.ConnTest.build_conn(), config[:session] || %{})}
   end
 
+  test "@myself" do
+    cid = %Phoenix.LiveComponent.CID{cid: 123}
+    assert String.Chars.to_string(cid) == "123"
+    assert Phoenix.HTML.Safe.to_iodata(cid) == "123"
+  end
+
   test "renders successfully when disconnected", %{conn: conn} do
     conn = get(conn, "/components")
 
@@ -82,6 +88,32 @@ defmodule Phoenix.LiveView.ComponentTest do
     assert render_click(view, "disable-all", %{}) =~ "Disabled\n"
     # Sync to make sure it is still alive
     assert render(view) =~ "Disabled\n"
+  end
+
+  test "tracks removals from a nested LiveView", %{conn: conn} do
+    {:ok, view, _} = live(conn, "/component_in_live")
+    assert render(view) =~ "Hello World"
+    view |> find_live_child("nested_live") |> render_click("disable", %{})
+    refute render(view) =~ "Hello World"
+  end
+
+  test "tracks removals when there is a race between server and client", %{conn: conn} do
+    {:ok, view, _} = live(conn, "/cids_destroyed")
+
+    # The button is on the page
+    assert render(view) =~ "Hello World</button>"
+
+    # Make sure we can bump the component
+    assert view |> element("#bumper") |> render_click() =~ "Bump: 1"
+
+    # Now click the form
+    assert view |> element("form") |> render_submit() =~ "loading..."
+
+    # Which will be reset almost immediately
+    assert render(view) =~ "Hello World</button>"
+
+    # But the client did not have time to remove it so the bumper still keeps going
+    assert view |> element("#bumper") |> render_click() =~ "Bump: 2"
   end
 
   test "preloads", %{conn: conn} do
@@ -309,7 +341,7 @@ defmodule Phoenix.LiveView.ComponentTest do
     use Phoenix.LiveComponent
 
     # Assert endpoint was set
-    def mount(%{endpoint: Endpoint} = socket) do
+    def mount(%{endpoint: Endpoint, router: SomeRouter} = socket) do
       send(self(), {:mount, socket})
       {:ok, assign(socket, hello: "world")}
     end
@@ -355,14 +387,17 @@ defmodule Phoenix.LiveView.ComponentTest do
 
   describe "render_component/2" do
     test "full life-cycle without id" do
-      assert render_component(MyComponent, from: "test") =~ "FROM test world"
+      assert render_component(MyComponent, [from: "test"], router: SomeRouter) =~
+               "FROM test world"
+
       assert_received {:mount, %{assigns: %{flash: %{}}}}
       assert_received {:preload, [%{from: "test"}]}
       assert_received {:update, %{from: "test"}, %{assigns: %{flash: %{}}}}
     end
 
     test "full life-cycle with id" do
-      assert render_component(MyComponent, from: "test", id: "stateful") =~ "FROM test world"
+      assert render_component(MyComponent, %{from: "test", id: "stateful"}, router: SomeRouter) =~
+               "FROM test world"
 
       assert_received {:mount,
                        %{assigns: %{flash: %{}, myself: %Phoenix.LiveComponent.CID{cid: -1}}}}

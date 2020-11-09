@@ -1,7 +1,7 @@
 defmodule Phoenix.LiveView.MixProject do
   use Mix.Project
 
-  @version "0.14.0"
+  @version "0.15.0-dev"
 
   def project do
     [
@@ -43,7 +43,7 @@ defmodule Phoenix.LiveView.MixProject do
       {:telemetry, "~> 0.4.2 or ~> 0.5"},
       {:jason, "~> 1.0", optional: true},
       {:ex_doc, "~> 0.22", only: :docs},
-      {:floki, "~> 0.26.0", only: :test},
+      {:floki, "~> 0.27.0", only: :test},
       {:html_entities, ">= 0.0.0", only: :test}
     ]
   end
@@ -67,12 +67,14 @@ defmodule Phoenix.LiveView.MixProject do
       "guides/client/form-bindings.md",
       "guides/client/dom-patching.md",
       "guides/client/js-interop.md",
+      "guides/client/uploads-external.md",
       "guides/server/assigns-eex.md",
       "guides/server/error-handling.md",
       "guides/server/live-layouts.md",
       "guides/server/live-navigation.md",
       "guides/server/security-model.md",
       "guides/server/telemetry.md",
+      "guides/server/uploads.md",
       "guides/server/using-gettext.md"
     ]
   end

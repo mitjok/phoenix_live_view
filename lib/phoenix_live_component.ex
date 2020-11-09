@@ -297,10 +297,10 @@ defmodule Phoenix.LiveComponent do
         New entry: <%= @entry %>
       <% end %>
 
-  The `do/end` will be available as an anonymous function in an assign named
-  `@inner_content`. The anonymous function must be invoked passing a new set
-  of assigns that will be merged into the user assigns. For example, the grid
-  component above could be implemented as:
+  The `do/end` will be available in an assign named `@inner_block`.
+  You can render its contents by calling `render_block` with the
+  assign itself and a keyword list of assigns to inject into the rendered
+  content. For example, the grid component above could be implemented as:
 
       defmodule GridComponent do
         use Phoenix.LiveComponent
@@ -310,7 +310,7 @@ defmodule Phoenix.LiveComponent do
           <div class="grid">
             <%= for entry <- @entries do %>
               <div class="column">
-                <%= @inner_content.(entry: entry) %>
+                <%= render_block(@inner_block, entry: entry) %>
               </div>
             <% end %>
           </div>
@@ -320,18 +320,18 @@ defmodule Phoenix.LiveComponent do
 
   Where the `:entry` assign was injected into the `do/end` block.
 
-  Note the `@inner_content` assign is also passed to `c:update/2`
+  Note the `@inner_block` assign is also passed to `c:update/2`
   along all other assigns. So if you have a custom `update/2`
   implementation, make sure to assign it to the socket like so:
 
-      def update(%{inner_content: inner_content}, socket) do
-        {:ok, assign(socket, inner_content: inner_content)}
+      def update(%{inner_block: inner_block}, socket) do
+        {:ok, assign(socket, inner_block: inner_block)}
       end
 
   The above approach is the preferred one when passing blocks to `do/end`.
   However, if you are outside of a .leex template and you want to invoke a
-  component passing `do/end` blocks, you will have to explicitly handle the
-  assigns by giving it a clause:
+  component passing a `do/end` block, you will have to explicitly handle the
+  assigns by giving it a `->` clause:
 
       live_component @socket, GridComponent, entries: @entries do
         new_assigns -> "New entry: " <> new_assigns[:entry]
@@ -342,6 +342,71 @@ defmodule Phoenix.LiveComponent do
   A template rendered inside a component can use `live_patch` and
   `live_redirect` calls. The `live_patch` is always handled by the parent
   `LiveView`, as components do not provide `handle_params`.
+
+  ## Cost of stateful components
+
+  The internal infrastructure LiveView uses to keep track of stateful
+  components is very lightweight. However, be aware that in order to
+  provide change tracking and to send diffs over the wire, all of the
+  components assigns are kept in memory - exactly as it is done in
+  LiveViews themselves.
+
+  Therefore it is your responsibility to keep only the assigns necessary
+  in each component. For example, avoid passing all of LiveView components
+  when rendering a component:
+
+      <%= live_component @socket, MyComponent, assigns %>
+
+  Instead pass only the keys that you need:
+
+      <%= live_component @socket, MyComponent, user: @user, org: @org %>
+
+  Luckily, because LiveViews and LiveComponents are in the same process,
+  they share the same data structures. For example, in the code above,
+  the view and the component will share the same copies of the `@user`
+  and `@org` assigns.
+
+  You should also avoid using components to provide abstract DOM
+  components. As a guideline, a good LiveComponent encapsulates
+  application concerns and not DOM functionality. For example, if you
+  have a page that shows products for sale, you can encapsulate the
+  rendering of each of those products in a component. This component
+  may have many buttons and events within it. On the opposite side,
+  do not write a component that is simply encapsulating generic DOM
+  components. For instance, do not do this:
+
+      defmodule MyButton
+        use Phoenix.LiveComponent
+
+        def render(assigns) do
+          ~L\"""
+          <button class="css-framework-class" phx-click="click">
+            <%= @text %>
+          </button>
+          \"""
+        end
+
+        def handle_event("click", _, socket) do
+          _ = socket.assigns.on_click.()
+          {:noreply, socket}
+        end
+      end
+
+  Instead, it is much simpler to create a function:
+
+      def my_button(text, click) do
+        assigns = %{text: text, click: click}
+
+        ~L\"""
+        <button class="css-framework-class" phx-click="<%= @click %>">
+            <%= @text %>
+        </button>
+        \"""
+      end
+
+  If you keep components mostly as an application concern with
+  only the necessary assigns, it is unlikely you will run into
+  issues related to stateful components.
 
   ## Limitations
 
@@ -416,6 +481,10 @@ defmodule Phoenix.LiveComponent do
 
     defimpl Phoenix.HTML.Safe do
       def to_iodata(%{cid: cid}), do: Integer.to_string(cid)
+    end
+
+    defimpl String.Chars do
+      def to_string(%{cid: cid}), do: Integer.to_string(cid)
     end
   end
 

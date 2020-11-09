@@ -1,5 +1,93 @@
 # Changelog
 
+## 0.15.0
+
+### Enhancements
+  - Implement `Phoenix.LiveViewTest.open_browser/2` that opens up a browser with the LiveView page
+
+### Backwards incompatible changes
+  - Remove `@inner_content` in components and introduce `render_block` for rendering component `@inner_block`
+  - Remove `@live_module` in socket templates in favor of `@socket.view`
+
+### Bug fixes
+  - Make sure URLs are decoded after they are split
+  - Do not recover forms without inputs
+  - Fix race condition when components are removed and then immediately re-added before the client can notify their CIDs have been destroyed
+  - Do not render LiveView if only events/replies have been added to the socket
+  - Properly merge different components when sharing component subtrees on initial render
+  - Allow variables inside do-blocks to be tainted
+  - Fix `push_redirect` from mount hanging on the client and causing a fallback to full page reload when following a clicked `live_redirect` on the client
+
+## 0.14.8 (2020-10-30)
+
+### Bug fixes
+  - Fix compatiblity with latest Plug
+
+## 0.14.7 (2020-09-25)
+
+### Bug fixes
+  - Fix `redirect(socket, external: ...)` when returned from an event
+  - Properly follow location hashes on live patch/redirect
+  - Fix failure in `Phoenix.LiveViewTest` when phx-update has non-HTML nodes as children
+  - Fix `phx_trigger_action` submitting the form before the DOM updates are complete
+
+## 0.14.6 (2020-09-21)
+
+### Bug fixes
+  - Fix race condition on `phx-trigger-action` causing reconnects before server form submit
+
+## 0.14.5 (2020-09-20)
+
+### Enhancements
+
+  - Optimize DOM prepend and append operations
+  - Add `Phoenix.LiveView.send_update_after/3`
+
+### Bug fixes
+  - Fix scroll position when using back/forward with `live_redirect`'s
+  - Handle recursive components when generating diffs
+  - Support hard redirects on mount
+  - Properly track nested components on deletion on `Phoenix.LiveViewTest`
+
+## 0.14.4 (2020-07-30)
+
+### Bug fixes
+  - Fix hidden inputs throwing selection range error
+
+## 0.14.3 (2020-07-24)
+
+### Enhancements
+  - Support `render_layout` with LiveEEx
+
+### Bug fixes
+  - Fix focused inputs being overwritten by latent patch
+  - Fix LiveView error when `"_target"` input name contains array
+  - Fix change tracking when passing a do-block to components
+
+## 0.14.2 (2020-07-21)
+
+### Bug fixes
+  - Fix Map of assigns together with `@inner_content` causing `no function clause matching in Keyword.put/3` error
+  - Fix `LiveViewTest` failing to patch children properly for append/prepend based phx-update's
+  - Fix argument error when providing `:as` option to a `live` route
+  - Fix page becoming unresponsive when the server crashes while handling a live patch
+  - Fix empty diff causing pending data-ref based updates, such as classes and disable-with content to not be updated
+  - Fix bug where throttling keydown events would eat key presses
+  - Fix textarea's failing to be disabled on form submit
+  - Fix text node DOM memory leak when using phx-update append/prepend
+
+### Enhancements
+  - Allow `:router` to be given to `render_component`
+  - Display file on compile warning for `~L`
+  - Log error on client when using a hook without a DOM ID
+  - Optimize phx-update append/prepend based DOM updates
+
+## 0.14.1 (2020-07-09)
+
+### Bug fixes
+  - Fix nested `live_render`'s failing to be torn down when removed from the DOM in certain cases
+  - Fix LEEx issue for nested conditions failing to be re-evaluated
+
 ## 0.14.0 (2020-07-07)
 
 ### Bug fixes

@@ -10,6 +10,11 @@ defmodule Phoenix.LiveView.EventTest do
 
   @endpoint Endpoint
 
+  setup_all do
+    ExUnit.CaptureLog.capture_log(fn -> Endpoint.start_link() end)
+    :ok
+  end
+
   setup config do
     {:ok,
      conn: Plug.Test.init_test_session(Phoenix.ConnTest.build_conn(), config[:session] || %{})}
@@ -18,13 +23,19 @@ defmodule Phoenix.LiveView.EventTest do
   describe "push_event" do
     test "sends updates with general assigns diff", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/events")
-      GenServer.call(view.pid, {:run, fn socket ->
-        new_socket =
-          socket
-          |> LiveView.assign(count: 123)
-          |> LiveView.push_event("my-event", %{one: 1})
-        {:reply, :ok, new_socket}
-      end})
+
+      GenServer.call(
+        view.pid,
+        {:run,
+         fn socket ->
+           new_socket =
+             socket
+             |> LiveView.assign(count: 123)
+             |> LiveView.push_event("my-event", %{one: 1})
+
+           {:reply, :ok, new_socket}
+         end}
+      )
 
       assert_push_event(view, "my-event", %{one: 1})
       assert render(view) =~ "count: 123"
@@ -32,19 +43,34 @@ defmodule Phoenix.LiveView.EventTest do
 
     test "sends updates with no assigns diff", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/events")
-      GenServer.call(view.pid, {:run, fn socket ->
-        {:reply, :ok, LiveView.push_event(socket, "my-event", %{two: 2})}
-      end})
+
+      GenServer.call(
+        view.pid,
+        {:run,
+         fn socket ->
+           {:reply, :ok, LiveView.push_event(socket, "my-event", %{two: 2})}
+         end}
+      )
 
       assert_push_event(view, "my-event", %{two: 2})
       assert render(view) =~ "count: 0"
+    end
+
+    test "sends updates in root and child mounts", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/events-in-mount")
+
+      assert_push_event(view, "root-mount", %{root: "foo"})
+      assert_push_event(view, "child-mount", %{child: "bar"})
     end
   end
 
   describe "replies" do
     test "sends reply from handle_event with general assigns diff", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/events")
-      assert render_hook(view, :reply, %{count: 456, reply: %{"val" => "my-reply"}}) =~ "count: 456"
+
+      assert render_hook(view, :reply, %{count: 456, reply: %{"val" => "my-reply"}}) =~
+               "count: 456"
+
       assert_reply(view, %{"val" => "my-reply"})
     end
 
@@ -61,11 +87,16 @@ defmodule Phoenix.LiveView.EventTest do
       Process.monitor(pid)
 
       assert ExUnit.CaptureLog.capture_log(fn ->
-        send(view.pid, {:run, fn socket ->
-          {:reply, :boom, socket}
-        end})
-        assert_receive {:DOWN, _ref, :process, ^pid, _reason}
-      end) =~ "Got: {:reply, :boom"
+               send(
+                 view.pid,
+                 {:run,
+                  fn socket ->
+                    {:reply, :boom, socket}
+                  end}
+               )
+
+               assert_receive {:DOWN, _ref, :process, ^pid, _reason}
+             end) =~ "Got: {:reply, :boom"
     end
   end
 end

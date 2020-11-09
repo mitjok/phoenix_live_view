@@ -23,6 +23,11 @@ const PHX_LIVE_LINK = "data-phx-link"
 const PHX_TRACK_STATIC = "track-static"
 const PHX_LINK_STATE = "data-phx-link-state"
 const PHX_REF = "data-phx-ref"
+const PHX_UPLOAD_REF = "data-phx-upload-ref"
+const PHX_PREFLIGHTED_REFS = "data-phx-preflighted-refs"
+const PHX_DONE_REFS = "data-phx-done-refs"
+const PHX_DROP_TARGET = "drop-target"
+const PHX_ACTIVE_ENTRY_REFS = "data-phx-active-refs"
 const PHX_SKIP = "data-phx-skip"
 const PHX_REMOVE = "data-phx-remove"
 const PHX_PAGE_LOADING = "page-loading"
@@ -56,6 +61,7 @@ const PHX_AUTO_RECOVER = "auto-recover"
 const PHX_LV_DEBUG = "phx:live-socket:debug"
 const PHX_LV_PROFILE = "phx:live-socket:profiling"
 const PHX_LV_LATENCY_SIM = "phx:live-socket:latency-sim"
+const PHX_PROGRESS = "progress"
 const LOADER_TIMEOUT = 1
 const BEFORE_UNLOAD_LOADER_TIMEOUT = 200
 const BINDING_PREFIX = "phx-"
@@ -125,8 +131,297 @@ let isEmpty = (obj) => {
 
 let maybe = (el, callback) => el && callback(el)
 
+class UploadEntry {
+  static isActive(fileEl, file){
+    let isNew = file._phxRef === undefined
+    let activeRefs = fileEl.getAttribute(PHX_ACTIVE_ENTRY_REFS).split(",")
+    let isActive = activeRefs.indexOf(LiveUploader.genFileRef(file)) >= 0
+    return file.size > 0 && (isNew || isActive)
+  }
+
+  static isPreflighted(fileEl, file){
+    let preflightedRefs = fileEl.getAttribute(PHX_PREFLIGHTED_REFS).split(",")
+    let isPreflighted = preflightedRefs.indexOf(LiveUploader.genFileRef(file)) >= 0
+    return isPreflighted && this.isActive(fileEl, file)
+  }
+
+  constructor(fileEl, file, view){
+    this.ref = LiveUploader.genFileRef(file)
+    this.fileEl = fileEl
+    this.file = file
+    this.view = view
+    this.meta = null
+    this._isCancelled = false
+    this._isDone = false
+    this._progress = 0
+    this._onDone = function(){}
+  }
+
+  metadata(){ return this.meta }
+
+  progress(progress){
+    this._progress = Math.floor(progress)
+    if(this._progress >= 100){
+      this._progress = 100
+      this._isDone = true
+      this.view.pushFileProgress(this.fileEl, this.ref, 100, () => {
+        LiveUploader.untrackFile(this.fileEl, this.file)
+        this._onDone()
+      })
+    } else {
+      this.view.pushFileProgress(this.fileEl, this.ref, this._progress)
+    }
+  }
+
+  cancel(){
+    this._isCancelled = true
+    this._isDone = true
+    this._onDone()
+  }
+
+  isDone(){ return this._isDone }
+
+  error(reason = "failed"){
+    this.view.pushFileProgress(this.fileEl, this.ref, {error: reason})
+  }
+
+  //private
+
+  onDone(callback){ this._onDone = callback }
+
+  toPreflightPayload(){
+    return {
+      last_modified: this.file.lastModified,
+      name: this.file.name,
+      size: this.file.size,
+      type: this.file.type,
+      ref: this.ref
+    }
+  }
+
+  uploader(uploaders){
+    if(this.meta.uploader){
+      let callback = uploaders[this.meta.uploader] || logError(`no uploader configured for ${this.meta.uploader}`)
+      return {name: this.meta.uploader, callback: callback}
+    } else {
+      return {name: "channel", callback: channelUploader}
+    }
+  }
+
+  zipPostFlight(resp){
+    this.meta = resp.entries[this.ref]
+    if(!this.meta){ logError(`no preflight upload response returned with ref ${this.ref}`, {input: this.fileEl, response: resp})}
+  }
+}
+
+let Hooks = {}
+Hooks.LiveFileUpload = {
+  preflightedRefs(){ return this.el.getAttribute(PHX_PREFLIGHTED_REFS) },
+
+  mounted(){ this.preflightedWas = this.preflightedRefs() },
+
+  updated() {
+    let newPreflights = this.preflightedRefs()
+    if(this.preflightedWas !== newPreflights){
+      this.preflightedWas = newPreflights
+      if(newPreflights === ""){
+        this.__view.cancelSubmit(this.el.form)
+      }
+    }
+  }
+}
+
+Hooks.LiveImgPreview = {
+  mounted() {
+    this.ref = this.el.getAttribute("data-phx-entry-ref")
+    this.inputEl = document.getElementById(this.el.getAttribute(PHX_UPLOAD_REF))
+    LiveUploader.getEntryDataURL(this.inputEl, this.ref, url => this.el.src = url)
+  }
+}
+
+let liveUploaderFileRef = 0
+class LiveUploader {
+  static genFileRef(file){
+    let ref = file._phxRef
+    if(ref !== undefined){
+      return ref
+    } else {
+      file._phxRef = (liveUploaderFileRef++).toString()
+      return file._phxRef
+    }
+  }
+
+  static getEntryDataURL(inputEl, ref, callback){
+    let file = this.activeFiles(inputEl).find(file => this.genFileRef(file) === ref)
+    let reader = new FileReader()
+    reader.onload = (e) => callback(e.target.result)
+    reader.readAsDataURL(file)
+  }
+
+  static hasUploadsInProgress(formEl){
+    let active = 0
+    DOM.all(formEl, `input[type="file"]`, input => {
+      if(input.getAttribute(PHX_PREFLIGHTED_REFS) !== input.getAttribute(PHX_DONE_REFS)){
+        active++
+      }
+    })
+    return active > 0
+  }
+
+  static serializeUploads(inputEl){
+    let files = this.activeFiles(inputEl, "serialize")
+    let fileData = {}
+    files.forEach(file => {
+      let entry = {path: inputEl.name}
+      let uploadRef = inputEl.getAttribute(PHX_UPLOAD_REF)
+      fileData[uploadRef] = fileData[uploadRef] || []
+      entry.ref = this.genFileRef(file)
+      entry.name = file.name
+      entry.type = file.type
+      entry.size = file.size
+      fileData[uploadRef].push(entry)
+    })
+    return fileData
+  }
+
+  static clearFiles(inputEl){
+    inputEl.value = null
+    DOM.putPrivate(inputEl, "files", [])
+  }
+
+  static untrackFile(inputEl, file){
+    DOM.putPrivate(inputEl, "files", DOM.private(inputEl, "files").filter(f => !Object.is(f, file)))
+  }
+
+  static trackFiles(inputEl, files){
+    if(inputEl.getAttribute("multiple") !== null){
+      let newFiles = files.filter(file => !this.activeFiles(inputEl).find(f => Object.is(f, file)))
+      DOM.putPrivate(inputEl, "files", this.activeFiles(inputEl).concat(newFiles))
+      inputEl.value = null
+    } else {
+      DOM.putPrivate(inputEl, "files", files)
+    }
+  }
+
+  static activeFileInputs(formEl){
+    let fileInputs = formEl.querySelectorAll(`input[type="file"]`)
+    return Array.from(fileInputs).filter(el => el.files && this.activeFiles(el).length > 0)
+  }
+
+  static activeFiles(input){
+    return (DOM.private(input, "files") || []).filter(f => UploadEntry.isActive(input, f))
+  }
+
+  static inputsAwaitingPreflight(formEl){
+    let fileInputs = formEl.querySelectorAll(`input[type="file"]`)
+    return Array.from(fileInputs).filter(input => this.filesAwaitingPreflight(input).length > 0)
+  }
+
+  static filesAwaitingPreflight(input){
+    return this.activeFiles(input).filter(f => !UploadEntry.isPreflighted(input, f))
+  }
+
+  constructor(inputEl, view, onComplete){
+    this.view = view
+    this.onComplete = onComplete
+    this._entries =
+      Array.from(LiveUploader.filesAwaitingPreflight(inputEl) || [])
+        .map(file => new UploadEntry(inputEl, file, view))
+
+    this.numEntriesInProgress = this._entries.length
+  }
+
+  entries(){ return this._entries }
+
+  initAdapterUpload(resp, onError, liveSocket){
+    this._entries =
+      this._entries.map(entry => {
+        entry.zipPostFlight(resp)
+        entry.onDone(() => {
+          this.numEntriesInProgress--
+          if(this.numEntriesInProgress === 0){ this.onComplete() }
+        })
+        return entry
+      })
+
+    let groupedEntries = this._entries.reduce((acc, entry) => {
+      let {name, callback} = entry.uploader(liveSocket.uploaders)
+      acc[name] = acc[name] || {callback: callback, entries: []}
+      acc[name].entries.push(entry)
+      return acc
+    }, {})
+
+    for(let name in groupedEntries){
+      let {callback, entries} = groupedEntries[name]
+      callback(entries, onError, resp, liveSocket)
+    }
+  }
+}
+
+let channelUploader = function(entries, onError, resp, liveSocket){
+  entries.forEach(entry => {
+    let entryUploader = new EntryUploader(entry, resp.config.chunk_size, liveSocket)
+    entryUploader.upload()
+  })
+}
+
+class EntryUploader {
+  constructor(entry, chunkSize, liveSocket){
+    this.liveSocket = liveSocket
+    this.entry = entry
+    this.offset = 0
+    this.chunkSize = chunkSize
+    this.uploadChannel = liveSocket.channel(`lvu:${entry.ref}`, {token: entry.metadata()})
+  }
+
+  upload(){
+    this.uploadChannel.join()
+      .receive("ok", data => this.readNextChunk())
+      .receive("error", reason => {
+        this.uploadChannel.leave()
+        this.entry.error()
+      })
+  }
+
+  isDone(){ return this.offset >= this.entry.file.size }
+
+  readNextChunk(){
+    let reader = new window.FileReader()
+    let blob = this.entry.file.slice(this.offset, this.chunkSize + this.offset)
+    reader.onload = (e) => {
+      if(e.target.error === null){
+        this.offset += e.target.result.byteLength
+        this.pushChunk(e.target.result)
+      } else {
+        return logError("Read error: " + e.target.error)
+      }
+    }
+    reader.readAsArrayBuffer(blob)
+  }
+
+  pushChunk(chunk){
+    if(!this.uploadChannel.isJoined()){ return }
+    this.uploadChannel.push("chunk", chunk)
+      .receive("ok", () => {
+        this.entry.progress((this.offset / this.entry.file.size) * 100)
+        if(!this.isDone()){
+          setTimeout(() => this.readNextChunk(), this.liveSocket.getLatencySim() || 0)
+        }
+      })
+  }
+}
+
 let serializeForm = (form, meta = {}) => {
   let formData = new FormData(form)
+  let toRemove = []
+
+  formData.forEach((val, key, index) => {
+    if(val instanceof File){ toRemove.push(key) }
+  })
+
+  // Cleanup after building fileData
+  toRemove.forEach(key => formData.delete(key))
+
   let params = new URLSearchParams()
   for(let [key, val] of formData.entries()){ params.append(key, val) }
   for(let metaKey in meta){ params.append(metaKey, meta[metaKey]) }
@@ -155,7 +450,7 @@ export class Rendered {
     return this.recursiveToString(this.rendered, this.rendered[COMPONENTS], onlyCids)
   }
 
-  recursiveToString(rendered, components = rendered[COMPONENTS] || {}, onlyCids){
+  recursiveToString(rendered, components = rendered[COMPONENTS], onlyCids){
     onlyCids = onlyCids ? new Set(onlyCids) : null
     let output = {buffer: "", components: components, onlyCids: onlyCids}
     this.toOutputBuffer(rendered, output)
@@ -166,7 +461,7 @@ export class Rendered {
 
   isComponentOnlyDiff(diff){
     if(!diff[COMPONENTS]){ return false }
-    return Object.keys(diff).filter(k => k !== "title" && k !== COMPONENTS).length === 0
+    return Object.keys(diff).length === 1
   }
 
   getComponent(diff, cid){ return diff[COMPONENTS][cid] }
@@ -175,8 +470,11 @@ export class Rendered {
     let newc = diff[COMPONENTS]
     delete diff[COMPONENTS]
     this.rendered = this.recursiveMerge(this.rendered, diff)
+    this.rendered[COMPONENTS] = this.rendered[COMPONENTS] || {}
+
     if(newc){
-      let oldc = this.rendered[COMPONENTS] || {}
+      let oldc = this.rendered[COMPONENTS]
+
       for(let cid in newc){
         let cdiff = newc[cid]
         let component = cdiff
@@ -206,9 +504,8 @@ export class Rendered {
         newc[cid] = component
       }
       for (var key in newc) { oldc[key] = newc[key] }
-      this.rendered[COMPONENTS] = oldc
+      diff[COMPONENTS] = newc
     }
-    diff[COMPONENTS] = newc
   }
 
   recursiveMerge(target, source){
@@ -416,9 +713,10 @@ export class LiveSocket {
     this.pendingLink = null
     this.currentLocation = clone(window.location)
     this.hooks = opts.hooks || {}
+    this.uploaders = opts.uploaders || {}
     this.loaderTimeout = opts.loaderTimeout || LOADER_TIMEOUT
     this.boundTopLevelEvents = false
-    this.domCallbacks = opts.dom || {onBeforeElUpdated: closure()}
+    this.domCallbacks = Object.assign({onNodeAdded: closure(), onBeforeElUpdated: closure()}, opts.dom || {})
     window.addEventListener("unload", e => {
       this.unloaded = true
     })
@@ -525,6 +823,7 @@ export class LiveSocket {
   }
 
   reloadWithJitter(view){
+    view.destroy()
     this.disconnect()
     let [minMs, maxMs] = RELOAD_JITTER
     let afterMs = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs
@@ -543,7 +842,9 @@ export class LiveSocket {
     }, afterMs)
   }
 
-  getHookCallbacks(hookName){ return this.hooks[hookName] }
+  getHookCallbacks(name){
+    return name && name.startsWith("Phoenix.") ? Hooks[name.split(".")[1]] : this.hooks[name]
+  }
 
   isUnloaded(){ return this.unloaded }
 
@@ -626,7 +927,7 @@ export class LiveSocket {
 
   getViewByEl(el){
     let rootId = el.getAttribute(PHX_ROOT_ID)
-    return this.getRootById(rootId).getDescendentByEl(el)
+    return maybe(this.getRootById(rootId), root => root.getDescendentByEl(el))
   }
 
   getRootById(id){ return this.roots[id] }
@@ -640,7 +941,7 @@ export class LiveSocket {
 
   destroyViewByEl(el){
     let root = this.getRootById(el.getAttribute(PHX_ROOT_ID))
-    if(root) root.destroyDescendent(el.id)
+    if(root){ root.destroyDescendent(el.id) }
   }
 
   setActiveElement(target){
@@ -683,6 +984,7 @@ export class LiveSocket {
 
   bindTopLevelEvents(){
     if(this.boundTopLevelEvents){ return }
+
     this.boundTopLevelEvents = true
     window.addEventListener("pageshow", e => {
       if(e.persisted){ // reload page if being restored from back/forward cache
@@ -710,6 +1012,19 @@ export class LiveSocket {
       if(phxTarget && !phxTarget !== "window"){
         view.pushEvent(type, targetEl, targetCtx, phxEvent, this.eventMeta(type, e, targetEl))
       }
+    })
+    window.addEventListener("dragover", e => e.preventDefault())
+    window.addEventListener("drop", e => {
+      e.preventDefault()
+      let dropTargetId = maybe(closestPhxBinding(e.target, this.binding(PHX_DROP_TARGET)), trueTarget => {
+        return trueTarget.getAttribute(this.binding(PHX_DROP_TARGET))
+      })
+      let dropTarget = dropTargetId && document.getElementById(dropTargetId)
+      let files = Array.from(e.dataTransfer.files || [])
+      if(!dropTarget || dropTarget.disabled || files.length === 0 || !(dropTarget.files instanceof FileList)){ return }
+
+      LiveUploader.trackFiles(dropTarget, files)
+      dropTarget.dispatchEvent(new Event("input", {bubbles: true}))
     })
   }
 
@@ -791,9 +1106,17 @@ export class LiveSocket {
 
   bindNav(){
     if(!Browser.canPushState()){ return }
+    if(history.scrollRestoration){ history.scrollRestoration = "manual" }
+    let scrollTimer = null
+    window.addEventListener("scroll", e => {
+      clearTimeout(scrollTimer)
+      scrollTimer = setTimeout(() => {
+        Browser.updateCurrentState(state => Object.assign(state, {scroll: window.scrollY}))
+      }, 100)
+    })
     window.addEventListener("popstate", event => {
       if(!this.registerNewLocation(window.location)){ return }
-      let {type, id, root} = event.state || {}
+      let {type, id, root, scroll} = event.state || {}
       let href = window.location.href
 
       if(this.main.isConnected() && (type === "patch" && id  === this.main.id)){
@@ -801,6 +1124,11 @@ export class LiveSocket {
       } else {
         this.replaceMain(href, null, () => {
           if(root){ this.replaceRootHistory() }
+          if(typeof(scroll) === "number"){
+            setTimeout(() => {
+              window.scrollTo(0, scroll)
+            }, 0) // the body needs to render before we scroll.
+          }
         })
       }
     }, false)
@@ -845,9 +1173,10 @@ export class LiveSocket {
   }
 
   historyRedirect(href, linkState, flash){
+    let scroll = window.scrollY
     this.withPageLoading({to: href, kind: "redirect"}, done => {
       this.replaceMain(href, flash, () => {
-        Browser.pushState(linkState, {type: "redirect", id: this.main.id}, href)
+        Browser.pushState(linkState, {type: "redirect", id: this.main.id, scroll: scroll}, href)
         this.registerNewLocation(window.location)
         done()
       })
@@ -973,9 +1302,21 @@ export let Browser = {
     req.send()
   },
 
+  updateCurrentState(callback){ if(!this.canPushState()){ return }
+    history.replaceState(callback(history.state || {}), "", window.location.href)
+  },
+
   pushState(kind, meta, to){
     if(this.canPushState()){
       if(to !== window.location.href){
+        if(meta.type == "redirect" && meta.scroll) {
+          // If we're redirecting store the current scrollY for the current history state.
+          let currentState = history.state || {}
+          currentState.scroll = meta.scroll
+          history.replaceState(currentState, "", window.location.href)
+        }
+
+        delete meta.scroll // Only store the scroll in the redirect case.
         history[kind + "State"](meta, "", to || null) // IE will coerce undefined to string
         let hashEl = this.getHashTargetEl(window.location.hash)
 
@@ -1005,9 +1346,10 @@ export let Browser = {
 
   localKey(namespace, subkey){ return `${namespace}-${subkey}` },
 
-  getHashTargetEl(hash){
-    if(hash.toString() === ""){ return }
-    return document.getElementById(hash) || document.querySelector(`a[name="${hash.substring(1)}"]`)
+  getHashTargetEl(maybeHash) {
+    let hash = maybeHash.toString().substring(1)
+    if(hash === ""){ return }
+    return document.getElementById(hash) || document.querySelector(`a[name="${hash}"]`)
   }
 }
 
@@ -1025,20 +1367,17 @@ export let DOM = {
   },
 
   findComponentNodeList(node, cid){
-    let phxChildren = this.all(node, PHX_VIEW_SELECTOR)
-    let result = this.all(node, `[${PHX_COMPONENT}="${cid}"]`)
-
-    if(phxChildren.length === 0){
-      return result
-    } else {
-      return result.filter(element => !phxChildren.some(node => node.contains(element)))
-    }
+    return this.filterWithinSameLiveView(this.all(node, `[${PHX_COMPONENT}="${cid}"]`), node)
   },
 
   findPhxChildrenInFragment(html, parentId){
     let template = document.createElement("template")
     template.innerHTML = html
     return this.findPhxChildren(template.content, parentId)
+  },
+
+  isIgnored(el, phxUpdate){
+    return (el.getAttribute(phxUpdate) || el.getAttribute("data-phx-update")) === "ignore"
   },
 
   isPhxUpdate(el, phxUpdate, updateTypes){
@@ -1053,12 +1392,28 @@ export let DOM = {
     let initial = new Set(cids)
     return cids.reduce((acc, cid) => {
       let selector = `[${PHX_COMPONENT}="${cid}"] [${PHX_COMPONENT}]`
-      this.all(node, selector)
+
+      this.filterWithinSameLiveView(this.all(node, selector), node)
         .map(el => parseInt(el.getAttribute(PHX_COMPONENT)))
         .forEach(childCID => acc.delete(childCID))
 
       return acc
     }, initial)
+  },
+
+  filterWithinSameLiveView(nodes, parent) {
+    if(parent.querySelector(PHX_VIEW_SELECTOR)) {
+      return nodes.filter(el => this.withinSameLiveView(el, parent))
+    } else {
+      return nodes
+    }
+  },
+
+  withinSameLiveView(node, parent){
+    while(node = node.parentNode){
+      if(node.isSameNode(parent)){ return true }
+      if(node.getAttribute(PHX_VIEW)){ return false }
+    }
   },
 
   private(el, key){ return el[PHX_PRIVATE] && el[PHX_PRIVATE][key] },
@@ -1103,11 +1458,14 @@ export let DOM = {
         let currentCycle = this.incCycle(el, DEBOUNCE_TRIGGER, trigger)
         if(isNaN(timeout)){ return logError(`invalid throttle/debounce value: ${value}`) }
         if(throttle){
+          let newKeyDown = false
           if(event.type === "keydown"){
             let prevKey = this.private(el, DEBOUNCE_PREV_KEY)
-            this.putPrivate(el, DEBOUNCE_PREV_KEY, event.which)
-            if(prevKey !== event.which){ return callback() }
-          } else if(this.private(el, THROTTLED)){
+            this.putPrivate(el, DEBOUNCE_PREV_KEY, event.key)
+            newKeyDown = prevKey !== event.key
+          }
+
+          if(!newKeyDown && this.private(el, THROTTLED)){
             return false
           } else {
             callback()
@@ -1184,7 +1542,9 @@ export let DOM = {
     }
   },
 
-  mergeAttrs(target, source, exclude = []){
+  mergeAttrs(target, source, opts = {}){
+    let exclude = opts.exclude || []
+    let isIgnored = opts.isIgnored
     let sourceAttrs = source.attributes
     for (let i = sourceAttrs.length - 1; i >= 0; i--){
       let name = sourceAttrs[i].name
@@ -1194,13 +1554,17 @@ export let DOM = {
     let targetAttrs = target.attributes
     for (let i = targetAttrs.length - 1; i >= 0; i--){
       let name = targetAttrs[i].name
-      if(!source.hasAttribute(name)){ target.removeAttribute(name) }
+      if(isIgnored){
+        if(name.startsWith("data-") && !source.hasAttribute(name)){ target.removeAttribute(name) }
+      } else {
+        if(!source.hasAttribute(name)){ target.removeAttribute(name) }
+      }
     }
   },
 
   mergeFocusedInput(target, source){
     // skip selects because FF will reset highlighted index for any setAttribute
-    if(!(target instanceof HTMLSelectElement)){ DOM.mergeAttrs(target, source, ["value"]) }
+    if(!(target instanceof HTMLSelectElement)){ DOM.mergeAttrs(target, source, {except: ["value"]}) }
     if(source.readOnly){
       target.setAttribute("readonly", true)
     } else {
@@ -1208,17 +1572,21 @@ export let DOM = {
     }
   },
 
+  hasSelectionRange(el) {
+    return el.setSelectionRange && (el.type === "text" || el.type === "textarea")
+  },
+
   restoreFocus(focused, selectionStart, selectionEnd){
     if(!DOM.isTextualInput(focused)){ return }
     let wasFocused = focused.matches(":focus")
     if(focused.readOnly){ focused.blur() }
     if(!wasFocused){ focused.focus() }
-    if(focused.setSelectionRange && focused.type === "text" || focused.type === "textarea"){
+    if(this.hasSelectionRange(focused)){
       focused.setSelectionRange(selectionStart, selectionEnd)
     }
   },
 
-  isFormInput(el){ return /^(?:input|select|textarea)$/i.test(el.tagName) },
+  isFormInput(el){ return /^(?:input|select|textarea)$/i.test(el.tagName) && el.type !== "button"},
 
   syncAttrsToProps(el){
     if(el instanceof HTMLInputElement && CHECKABLE_INPUTS.indexOf(el.type.toLocaleLowerCase()) >= 0){
@@ -1232,47 +1600,115 @@ export let DOM = {
     return el.getAttribute && el.getAttribute(phxTriggerExternal) !== null
   },
 
-  undoRefs(ref, container){
-    DOM.all(container, `[${PHX_REF}="${ref}"]`, el => {
-      // remove refs
-      el.removeAttribute(PHX_REF)
-      // retore inputs
-      if(el.getAttribute(PHX_READONLY) !== null){
-        el.readOnly = false
-        el.removeAttribute(PHX_READONLY)
-      }
-      if(el.getAttribute(PHX_DISABLED) !== null){
-        el.disabled = false
-        el.removeAttribute(PHX_DISABLED)
-      }
-      // remove classes
-      PHX_EVENT_CLASSES.forEach(className => DOM.removeClass(el, className))
-      // restore disables
-      let disableRestore = el.getAttribute(PHX_DISABLE_WITH_RESTORE)
-      if(disableRestore !== null){
-        el.innerText = disableRestore
-        el.removeAttribute(PHX_DISABLE_WITH_RESTORE)
-      }
-    })
-  },
-
-  syncPendingRef(fromEl, toEl){
+  syncPendingRef(fromEl, toEl, disableWith){
     let ref = fromEl.getAttribute(PHX_REF)
     if(ref === null){ return true }
 
-    PHX_EVENT_CLASSES.forEach(className => {
-      fromEl.classList.contains(className) && toEl.classList.add(className)
-    })
-    toEl.setAttribute(PHX_REF, ref)
-    if(DOM.isFormInput(fromEl) || /submit/i.test(fromEl.type)){
+    if(DOM.isFormInput(fromEl) || fromEl.getAttribute(disableWith) !== null){
+      if(fromEl.type === "file"){ DOM.mergeAttrs(fromEl, toEl, {isIgnored: true}) }
+      DOM.putPrivate(fromEl, PHX_REF, toEl)
       return false
     } else {
+      PHX_EVENT_CLASSES.forEach(className => {
+        fromEl.classList.contains(className) && toEl.classList.add(className)
+      })
+      toEl.setAttribute(PHX_REF, ref)
       return true
+    }
+  },
+
+  cleanChildNodes(container, phxUpdate){
+    if (DOM.isPhxUpdate(container, phxUpdate, ["append", "prepend"])) {
+      let toRemove = []
+      container.childNodes.forEach(childNode => {
+        if(!childNode.id){
+          // Skip warning if it's an empty text node (e.g. a new-line)
+          let isEmptyTextNode = childNode.nodeType === Node.TEXT_NODE && childNode.nodeValue.trim() === ""
+          if(!isEmptyTextNode){
+            logError(`only HTML element tags with an id are allowed inside containers with phx-update.\n\n` +
+                    `removing illegal node: "${(childNode.outerHTML || childNode.nodeValue).trim()}"\n\n`)
+          }
+          toRemove.push(childNode)
+        }
+      })
+      toRemove.forEach(childNode => childNode.remove())
+    }
+  }
+}
+
+class DOMPostMorphRestorer {
+  constructor(containerBefore, containerAfter, updateType) {
+    let idsBefore = new Set()
+    let idsAfter = new Set([...containerAfter.children].map(child => child.id))
+
+    let elementsToModify = []
+
+    Array.from(containerBefore.children).forEach(child => {
+      if (child.id) { // all of our children should be elements with ids
+        idsBefore.add(child.id)
+        if (idsAfter.has(child.id)) {
+          let previousElementId = child.previousElementSibling && child.previousElementSibling.id
+          elementsToModify.push({elementId: child.id, previousElementId: previousElementId})
+        }
+      }
+    })
+
+    this.containerId = containerAfter.id
+    this.updateType = updateType
+    this.elementsToModify = elementsToModify
+    this.elementIdsToAdd = [...idsAfter].filter(id => !idsBefore.has(id))
+  }
+
+  // We do the following to optimize append/prepend operations:
+  //   1) Track ids of modified elements & of new elements
+  //   2) All the modified elements are put back in the correct position in the DOM tree
+  //      by storing the id of their previous sibling
+  //   3) New elements are going to be put in the right place by morphdom during append.
+  //      For prepend, we move them to the first position in the container
+  perform() {
+    let container = DOM.byId(this.containerId)
+    this.elementsToModify.forEach(elementToModify => {
+      if (elementToModify.previousElementId) {
+        maybe(document.getElementById(elementToModify.previousElementId), previousElem => {
+          maybe(document.getElementById(elementToModify.elementId), elem => {
+            let isInRightPlace = elem.previousElementSibling && elem.previousElementSibling.id == previousElem.id
+            if (!isInRightPlace) {
+              previousElem.insertAdjacentElement("afterend", elem)
+            }
+          })
+        })
+      } else {
+        // This is the first element in the container
+        maybe(document.getElementById(elementToModify.elementId), elem => {
+          let isInRightPlace = elem.previousElementSibling == null
+          if (!isInRightPlace) {
+            container.insertAdjacentElement("afterbegin", elem)
+          }
+        })
+      }
+    })
+
+    if(this.updateType == "prepend"){
+      this.elementIdsToAdd.reverse().forEach(elemId => {
+        maybe(document.getElementById(elemId), elem => container.insertAdjacentElement("afterbegin", elem))
+      })
     }
   }
 }
 
 class DOMPatch {
+  static patchEl(fromEl, toEl, activeElement){
+    morphdom(fromEl, toEl, {
+      childrenOnly: false,
+      onBeforeElUpdated: (fromEl, toEl) => {
+        if(activeElement && activeElement.isSameNode(fromEl) && DOM.isFormInput(fromEl)){
+          DOM.mergeFocusedInput(fromEl, toEl)
+          return false
+        }
+      }
+    })
+  }
+
   constructor(view, container, id, html, targetCID){
     this.view = view
     this.liveSocket = view.liveSocket
@@ -1311,13 +1747,15 @@ class DOMPatch {
     if(this.isCIDPatch() && !targetContainer){ return }
 
     let focused = liveSocket.getActiveElement()
-    let {selectionStart, selectionEnd} = focused && DOM.isTextualInput(focused) ? focused : {}
+    let {selectionStart, selectionEnd} = focused && DOM.hasSelectionRange(focused) ? focused : {}
     let phxUpdate = liveSocket.binding(PHX_UPDATE)
     let phxFeedbackFor = liveSocket.binding(PHX_FEEDBACK_FOR)
+    let disableWith = liveSocket.binding(PHX_DISABLE_WITH)
     let phxTriggerExternal = liveSocket.binding(PHX_TRIGGER_ACTION)
     let added = []
     let updates = []
     let appendPrependUpdates = []
+    let externalFormTriggered = null
 
     let diffHTML = liveSocket.time("premorph container prep", () => {
       return this.buildDiffHTML(container, html, phxUpdate, targetContainer)
@@ -1336,39 +1774,50 @@ class DOMPatch {
           return el
         },
         onNodeAdded: (el) => {
-          if(DOM.isNowTriggerFormExternal(el, phxTriggerExternal)){ el.submit() }
+          if(DOM.isNowTriggerFormExternal(el, phxTriggerExternal)){
+            externalFormTriggered = el
+          }
           // nested view handling
           if(DOM.isPhxChild(el) && view.ownsElement(el)){
             this.trackAfter("phxChildAdded", el)
           }
           added.push(el)
         },
-        onNodeDiscarded: (el) => { this.trackAfter("discarded", el) },
+        onNodeDiscarded: (el) => {
+          // nested view handling
+          if(DOM.isPhxChild(el)){ liveSocket.destroyViewByEl(el) }
+          this.trackAfter("discarded", el)
+        },
         onBeforeNodeDiscarded: (el) => {
           if(el.getAttribute && el.getAttribute(PHX_REMOVE) !== null){ return true }
-          if(el.parentNode !== null && DOM.isPhxUpdate(el.parentNode, phxUpdate, ["append", "prepend"])){ return false }
+          if(el.parentNode !== null && DOM.isPhxUpdate(el.parentNode, phxUpdate, ["append", "prepend"]) && el.id){ return false }
           if(this.skipCIDSibling(el)){ return false }
           this.trackBefore("discarded", el)
-          // nested view handling
-          if(DOM.isPhxChild(el)){
-            liveSocket.destroyViewByEl(el)
-            return true
-          }
+          return true
         },
         onElUpdated: (el) => {
-          if(DOM.isNowTriggerFormExternal(el, phxTriggerExternal)){ el.submit() }
+          if(DOM.isNowTriggerFormExternal(el, phxTriggerExternal)){
+            externalFormTriggered = el
+          }
           updates.push(el)
         },
         onBeforeElUpdated: (fromEl, toEl) => {
+          DOM.cleanChildNodes(toEl, phxUpdate)
           if(this.skipCIDSibling(toEl)){ return false }
-          if(fromEl.getAttribute(phxUpdate) === "ignore"){
+          if(DOM.isIgnored(fromEl, phxUpdate)){
             this.trackBefore("updated", fromEl, toEl)
-            DOM.mergeAttrs(fromEl, toEl)
+            DOM.mergeAttrs(fromEl, toEl, {isIgnored: true})
             updates.push(fromEl)
             return false
           }
           if(fromEl.type === "number" && (fromEl.validity && fromEl.validity.badInput)){ return false }
-          if(!DOM.syncPendingRef(fromEl, toEl)){ return false }
+          if(!DOM.syncPendingRef(fromEl, toEl, disableWith)){
+            if(fromEl.type === "file"){
+              this.trackBefore("updated", fromEl, toEl)
+              updates.push(fromEl)
+            }
+            return false
+          }
 
           // nested view handling
           if(DOM.isPhxChild(toEl)){
@@ -1391,23 +1840,8 @@ class DOMPatch {
             updates.push(fromEl)
             return false
           } else {
-            // we optimize append/prepend operations in two ways:
-            //   1) By tracking the previously appended ids. If the ids don't
-            //     change b/w patches, we know that we are going to re-arrange
-            //     the same appendPrependUpdates so we can skip the post-morph
-            //     append/prepend ops.
-            //   2) for appends, we can skip post-morph re-arranging if the
-            //     new content contains only new ids, because it will simply
-            //     be appended to the container
             if(DOM.isPhxUpdate(toEl, phxUpdate, ["append", "prepend"])){
-              let isAppend = toEl.getAttribute(phxUpdate) === "append"
-              let idsBefore = Array.from(fromEl.children).map(child => child.id)
-              let newIds = Array.from(toEl.children).map(child => child.id)
-              let isOnlyNewIds = isAppend && !newIds.find(id => idsBefore.indexOf(id) >= 0)
-
-              if(!isOnlyNewIds){
-                appendPrependUpdates.push([toEl.id, idsBefore])
-              }
+              appendPrependUpdates.push(new DOMPostMorphRestorer(fromEl, toEl, toEl.getAttribute(phxUpdate)))
             }
             DOM.syncAttrsToProps(toEl)
             this.trackBefore("updated", fromEl, toEl)
@@ -1421,19 +1855,7 @@ class DOMPatch {
 
     if(appendPrependUpdates.length > 0){
       liveSocket.time("post-morph append/prepend restoration", () => {
-        appendPrependUpdates.forEach(([containerID, idsBefore]) => {
-          let el = DOM.byId(containerID)
-          let isAppend = el.getAttribute(phxUpdate) === "append"
-          if(isAppend){
-            idsBefore.reverse().forEach(id => {
-              maybe(document.getElementById(id), child => el.insertBefore(child, el.firstChild))
-            })
-          } else {
-            idsBefore.forEach(id => {
-              maybe(document.getElementById(id), child => el.appendChild(child))
-            })
-          }
-        })
+        appendPrependUpdates.forEach(update => update.perform())
       })
     }
 
@@ -1442,6 +1864,10 @@ class DOMPatch {
     added.forEach(el => this.trackAfter("added", el))
     updates.forEach(el => this.trackAfter("updated", el))
 
+    if(externalFormTriggered){
+      liveSocket.disconnect()
+      externalFormTriggered.submit()
+    }
     return true
   }
 
@@ -1510,6 +1936,7 @@ export class View {
     this.childJoins = 0
     this.loaderTimer = null
     this.pendingDiffs = []
+    this.pruningCIDs = []
     this.href = href
     this.joinCount = this.parent ? this.parent.joinCount - 1 : 0
     this.joinPending = true
@@ -1518,6 +1945,8 @@ export class View {
     this.stopCallback = function(){}
     this.pendingJoinOps = this.parent ? null : []
     this.viewHooks = {}
+    this.uploaders = {}
+    this.formSubmits = []
     this.children = this.parent ? null : {}
     this.root.children[this.id] = {}
     this.channel = this.liveSocket.channel(`lv:${this.id}`, () => {
@@ -1651,7 +2080,7 @@ export class View {
       this.dropPendingRefs()
       let forms = this.formsForRecovery(html)
 
-      if(this.joinCount > 1 && forms.length > 0){
+      if(forms.length > 0){
         forms.forEach((form, i) => {
           this.pushFormRecovery(form, resp => {
             if(i === forms.length - 1){
@@ -1715,7 +2144,7 @@ export class View {
     patch.markPrunableContentForRemoval()
     this.performPatch(patch, false)
     this.joinNewChildren()
-    DOM.all(this.el, `[${this.binding(PHX_HOOK)}]`, hookEl => {
+    DOM.all(this.el, `[${this.binding(PHX_HOOK)}], [data-phx-${PHX_HOOK}]`, hookEl => {
       let hook = this.addHook(hookEl)
       if(hook){ hook.__trigger__("mounted") }
     })
@@ -1733,12 +2162,26 @@ export class View {
     this.stopCallback()
   }
 
+  triggerBeforeUpdateHook(fromEl, toEl){
+    this.liveSocket.triggerDOM("onBeforeElUpdated", [fromEl, toEl])
+    let hook = this.getHook(fromEl)
+    let isIgnored = hook && DOM.isIgnored(fromEl, this.binding(PHX_UPDATE))
+    if(hook && !fromEl.isEqualNode(toEl) && !(isIgnored && isEqualObj(fromEl.dataset, toEl.dataset))){
+      hook.__trigger__("beforeUpdate")
+      return hook
+    }
+  }
+
+  triggerUpdatedHook(hook){ hook.__trigger__("updated") }
+
   performPatch(patch, pruneCids){
     let destroyedCIDs = []
     let phxChildrenAdded = false
     let updatedHookIds = new Set()
 
     patch.after("added", el => {
+      this.liveSocket.triggerDOM("onNodeAdded", [el])
+
       let newHook = this.addHook(el)
       if(newHook){ newHook.__trigger__("mounted") }
     })
@@ -1746,18 +2189,12 @@ export class View {
     patch.after("phxChildAdded", el => phxChildrenAdded = true)
 
     patch.before("updated", (fromEl, toEl) => {
-      this.liveSocket.triggerDOM("onBeforeElUpdated", [fromEl, toEl])
-      let hook = this.getHook(fromEl)
-      let isIgnored = hook && fromEl.getAttribute(this.binding(PHX_UPDATE)) === "ignore"
-      if(hook && !fromEl.isEqualNode(toEl) && !(isIgnored && isEqualObj(fromEl.dataset, toEl.dataset))){
-        updatedHookIds.add(fromEl.id)
-        hook.__trigger__("beforeUpdate")
-      }
+      let hook = this.triggerBeforeUpdateHook(fromEl, toEl)
+      if(hook){ updatedHookIds.add(fromEl.id) }
     })
 
     patch.after("updated", el => {
-      let hook = this.getHook(el)
-      if(hook && updatedHookIds.has(el.id)){ hook.__trigger__("updated") }
+      if(updatedHookIds.has(el.id)){ this.triggerUpdatedHook(this.getHook(el)) }
     })
 
     patch.before("discarded", (el) => {
@@ -1872,7 +2309,9 @@ export class View {
   renderContainer(diff, kind){
     return this.liveSocket.time(`toString diff (${kind})`, () => {
       let tag = this.el.tagName
-      let cids = diff ? this.rendered.componentCIDs(diff) : null
+      // Don't skip any component in the diff nor any marked as pruned
+      // (as they may have been added back)
+      let cids = diff ? this.rendered.componentCIDs(diff).concat(this.pruningCIDs) : null
       let html = this.rendered.toString(cids)
       return `<${tag}>${html}</${tag}>`
     })
@@ -1889,11 +2328,12 @@ export class View {
   getHook(el){ return this.viewHooks[ViewHook.elementID(el)] }
 
   addHook(el){ if(ViewHook.elementID(el) || !el.getAttribute){ return }
-    let hookName = el.getAttribute(this.binding(PHX_HOOK))
+    let hookName = el.getAttribute(`data-phx-${PHX_HOOK}`) || el.getAttribute(this.binding(PHX_HOOK))
     if(hookName && !this.ownsElement(el)){ return }
     let callbacks = this.liveSocket.getHookCallbacks(hookName)
 
     if(callbacks){
+      if(!el.id){ logError(`no DOM ID for hook "${hookName}". Hooks require a unique ID on each element.`, el)}
       let hook = new ViewHook(this, el, callbacks)
       this.viewHooks[ViewHook.elementID(hook.el)] = hook
       return hook
@@ -1933,7 +2373,7 @@ export class View {
     this.onChannel("live_patch", (redir) => this.onLivePatch(redir))
     this.onChannel("live_redirect", (redir) => this.onLiveRedirect(redir))
     this.channel.onError(reason => this.onError(reason))
-    this.channel.onClose(() => this.onClose())
+    this.channel.onClose(reason => this.onClose(reason))
   }
 
   destroyAllChildren(){
@@ -1986,8 +2426,11 @@ export class View {
     return this.liveSocket.reloadWithJitter(this)
   }
 
-  onClose(){
-    if(this.isJoinPending()){ return this.liveSocket.reloadWithJitter(this) }
+  onClose(reason){
+    if(this.isDestroyed()){ return }
+    if(this.isJoinPending() || (this.liveSocket.hasPendingLink() && reason !== "leave")){
+      return this.liveSocket.reloadWithJitter(this)
+    }
     this.destroyAllChildren()
     this.liveSocket.dropActiveElement(this)
     // document.activeElement can be null in Internet Explorer 11
@@ -1998,11 +2441,9 @@ export class View {
   }
 
   onError(reason){
-    this.onClose()
+    this.onClose(reason)
     this.log("error", () => ["view crashed", reason])
-    if(!this.liveSocket.isUnloaded()){
-      this.displayError()
-    }
+    if(!this.liveSocket.isUnloaded()){ this.displayError() }
   }
 
   displayError(){
@@ -2011,7 +2452,7 @@ export class View {
     this.setContainerClasses(PHX_DISCONNECTED_CLASS, PHX_ERROR_CLASS)
   }
 
-  pushWithReply(refGenerator, event, payload, onReply = function(){ }){
+  pushWithReply(refGenerator, event, payload, onReply = function(){}){
     let [ref, [el]] = refGenerator ? refGenerator() : [null, []]
     let onLoadingDone = function(){}
     if(el && (el.getAttribute(this.binding(PHX_PAGE_LOADING)) !== null)){
@@ -2023,7 +2464,7 @@ export class View {
       this.liveSocket.wrapPush(() => {
         return this.channel.push(event, payload, PUSH_TIMEOUT).receive("ok", resp => {
           let hookReply = null
-          if(ref !== null){ DOM.undoRefs(ref, this.el) }
+          if(ref !== null){ this.undoRefs(ref) }
           if(resp.diff){
             hookReply = this.applyDiff("update", resp.diff, ({diff, events}) => {
               this.update(diff, events)
@@ -2037,6 +2478,37 @@ export class View {
         })
       })
     )
+  }
+
+  undoRefs(ref){
+    DOM.all(this.el, `[${PHX_REF}="${ref}"]`, el => {
+      // remove refs
+      el.removeAttribute(PHX_REF)
+      // restore inputs
+      if(el.getAttribute(PHX_READONLY) !== null){
+        el.readOnly = false
+        el.removeAttribute(PHX_READONLY)
+      }
+      if(el.getAttribute(PHX_DISABLED) !== null){
+        el.disabled = false
+        el.removeAttribute(PHX_DISABLED)
+      }
+      // remove classes
+      PHX_EVENT_CLASSES.forEach(className => DOM.removeClass(el, className))
+      // restore disables
+      let disableRestore = el.getAttribute(PHX_DISABLE_WITH_RESTORE)
+      if(disableRestore !== null){
+        el.innerText = disableRestore
+        el.removeAttribute(PHX_DISABLE_WITH_RESTORE)
+      }
+      let toEl = DOM.private(el, PHX_REF)
+      if(toEl){
+        let hook = this.triggerBeforeUpdateHook(el, toEl)
+        DOMPatch.patchEl(el, toEl, this.liveSocket.getActiveElement())
+        if(hook){ this.triggerUpdatedHook(hook) }
+        DOM.deletePrivate(el, PHX_REF)
+      }
+    })
   }
 
   putRef(elements, event){
@@ -2124,21 +2596,84 @@ export class View {
     })
   }
 
+  pushFileProgress(fileEl, entryRef, progress, onReply = function(){}){
+    this.pushWithReply(null, "progress", {
+      event: fileEl.getAttribute(this.binding(PHX_PROGRESS)),
+      ref: fileEl.getAttribute(PHX_UPLOAD_REF),
+      entry_ref: entryRef,
+      progress: progress
+    }, onReply)
+  }
+
   pushInput(inputEl, targetCtx, phxEvent, eventTarget, callback){
-    this.pushWithReply(() => this.putRef([inputEl, inputEl.form], "change"), "event", {
+    let uploads
+    let cid = this.targetComponentID(inputEl.form, targetCtx)
+    let refGenerator = () => this.putRef([inputEl, inputEl.form], "change")
+    let formData = serializeForm(inputEl.form, {_target: eventTarget.name})
+    if(inputEl.files && inputEl.files.length > 0){
+      LiveUploader.trackFiles(inputEl, Array.from(inputEl.files))
+    }
+    uploads = LiveUploader.serializeUploads(inputEl)
+    let event = {
       type: "form",
       event: phxEvent,
-      value: serializeForm(inputEl.form, {_target: eventTarget.name}),
-      cid: this.targetComponentID(inputEl.form, targetCtx)
-    }, callback)
+      value: formData,
+      uploads: uploads,
+      cid: cid
+    }
+    this.pushWithReply(refGenerator, "event", event, resp => {
+      if(inputEl.type === "file" && inputEl.getAttribute("data-phx-auto-upload") !== null){
+        if(LiveUploader.filesAwaitingPreflight(inputEl).length > 0) {
+          let [ref, els] = refGenerator()
+          this.uploadFiles(inputEl.form, targetCtx, ref, cid, (uploads) => {
+            callback && callback(resp)
+            this.triggerAwaitingSubmit(inputEl.form)
+          })
+        }
+      } else {
+        callback && callback(resp)
+      }
+    })
+  }
+
+  triggerAwaitingSubmit(formEl){
+    let awaitingSubmit = this.getScheduledSubmit(formEl)
+    if(awaitingSubmit){
+      let [el, ref, callback] = awaitingSubmit
+      this.cancelSubmit(formEl)
+      callback()
+    }
+  }
+
+  getScheduledSubmit(formEl){
+    return this.formSubmits.find(([el, callback]) => el.isSameNode(formEl))
+  }
+
+  scheduleSubmit(formEl, ref, callback){
+    if(this.getScheduledSubmit(formEl)){ return true }
+    this.formSubmits.push([formEl, ref, callback])
+  }
+
+  cancelSubmit(formEl){
+    this.formSubmits = this.formSubmits.filter(([el, ref, callback]) => {
+      if(el.isSameNode(formEl)){
+        this.undoRefs(ref)
+        return false
+      } else {
+        return true
+      }
+    })
   }
 
   pushFormSubmit(formEl, targetCtx, phxEvent, onReply){
-    let filterIgnored = el => !closestPhxBinding(el, `${this.binding(PHX_UPDATE)}=ignore`, el.form)
+    let filterIgnored = el => {
+      let userIgnored = closestPhxBinding(el, `${this.binding(PHX_UPDATE)}=ignore`, el.form)
+      return !(userIgnored || closestPhxBinding(el, `data-phx-update=ignore`, el.form))
+    }
     let refGenerator = () => {
       let disables = DOM.all(formEl, `[${this.binding(PHX_DISABLE_WITH)}]`)
       let buttons = DOM.all(formEl, "button").filter(filterIgnored)
-      let inputs = DOM.all(formEl, "input").filter(filterIgnored)
+      let inputs = DOM.all(formEl, "input,textarea,select").filter(filterIgnored)
 
       buttons.forEach(button => {
         button.setAttribute(PHX_DISABLED, button.disabled)
@@ -2147,16 +2682,76 @@ export class View {
       inputs.forEach(input => {
         input.setAttribute(PHX_READONLY, input.readOnly)
         input.readOnly = true
+        if(input.files){
+          input.setAttribute(PHX_DISABLED, input.disabled)
+          input.disabled = true
+        }
       })
       formEl.setAttribute(this.binding(PHX_PAGE_LOADING), "")
       return this.putRef([formEl].concat(disables).concat(buttons).concat(inputs), "submit")
     }
-    this.pushWithReply(refGenerator, "event", {
-      type: "form",
-      event: phxEvent,
-      value: serializeForm(formEl),
-      cid: this.targetComponentID(formEl, targetCtx)
-    }, onReply)
+
+    let cid = this.targetComponentID(formEl, targetCtx)
+    if(LiveUploader.hasUploadsInProgress(formEl)){
+      let [ref, els] = refGenerator()
+      return this.scheduleSubmit(formEl, ref, () => this.pushFormSubmit(formEl, targetCtx, phxEvent, onReply))
+    } else if(LiveUploader.inputsAwaitingPreflight(formEl).length > 0) {
+      let [ref, els] = refGenerator()
+      let proxyRefGen = () => [ref, els]
+      this.uploadFiles(formEl, targetCtx, ref, cid, (uploads) => {
+        let formData = serializeForm(formEl, {})
+        this.pushWithReply(proxyRefGen, "event", {
+          type: "form",
+          event: phxEvent,
+          value: formData,
+          cid: cid
+        }, onReply)
+      })
+    } else {
+      let formData = serializeForm(formEl)
+      this.pushWithReply(refGenerator, "event", {
+        type: "form",
+        event: phxEvent,
+        value: formData,
+        cid: cid
+      }, onReply)
+    }
+  }
+
+  uploadFiles(formEl, targetCtx, ref, cid, onComplete){
+    let joinCountAtUpload = this.joinCount
+    let inputEls = LiveUploader.activeFileInputs(formEl)
+
+    // get each file input
+    inputEls.forEach(inputEl => {
+      let uploader = new LiveUploader(inputEl, this, onComplete)
+      this.uploaders[inputEl] = uploader
+      let entries = uploader.entries().map(entry => entry.toPreflightPayload())
+
+      let payload = {
+        ref: inputEl.getAttribute(PHX_UPLOAD_REF),
+        entries: entries,
+        cid: this.targetComponentID(inputEl.form, targetCtx)
+      }
+
+      this.log("upload", () => [`sending preflight request`, payload])
+
+      this.pushWithReply(null, "allow_upload", payload, resp => {
+        this.log("upload", () => [`got preflight response`, resp])
+        if(resp.error){
+          this.undoRefs(ref)
+          let [entry_ref, reason] = resp.error
+          this.log("upload", () => [`error for entry ${entry_ref}`, reason])
+        } else {
+          let onError = (callback) => {
+            this.channel.onError(() => {
+              if(this.joinCount === joinCountAtUpload){ callback() }
+            })
+          }
+          uploader.initAdapterUpload(resp, onError, this.liveSocket)
+        }
+      })
+    })
   }
 
   pushFormRecovery(form, callback){
@@ -2183,6 +2778,8 @@ export class View {
   }
 
   formsForRecovery(html){
+    if(this.joinCount <= 1){ return [] }
+
     let phxChange = this.binding("change")
     let template = document.createElement("template")
     template.innerHTML = html
@@ -2190,18 +2787,35 @@ export class View {
     return(
       DOM.all(this.el, `form[${phxChange}]`)
          .filter(form => this.ownsElement(form))
+         .filter(form => form.elements.length > 0)
          .filter(form => form.getAttribute(this.binding(PHX_AUTO_RECOVER)) !== "ignore")
          .filter(form => template.content.querySelector(`form[${phxChange}="${form.getAttribute(phxChange)}"]`))
     )
   }
 
   maybePushComponentsDestroyed(destroyedCIDs){
-    let completelyDestroyedCIDs = destroyedCIDs.filter(cid => {
+    let willDestroyCIDs = destroyedCIDs.filter(cid => {
       return DOM.findComponentNodeList(this.el, cid).length === 0
     })
-    if(completelyDestroyedCIDs.length > 0){
-      this.pushWithReply(null, "cids_destroyed", {cids: completelyDestroyedCIDs}, () => {
-        this.rendered.pruneCIDs(completelyDestroyedCIDs)
+    if(willDestroyCIDs.length > 0){
+      this.pruningCIDs.push(...willDestroyCIDs)
+
+      this.pushWithReply(null, "cids_will_destroy", {cids: willDestroyCIDs}, () => {
+        // The cids are either back on the page or they will be fully removed,
+        // so we can remove them from the pruningCIDs.
+        this.pruningCIDs = this.pruningCIDs.filter(cid => willDestroyCIDs.indexOf(cid) !== -1)
+
+        // See if any of the cids we wanted to destroy were added back,
+        // if they were added back, we don't actually destroy them.
+        let completelyDestroyCIDs = willDestroyCIDs.filter(cid => {
+          return DOM.findComponentNodeList(this.el, cid).length === 0
+        })
+
+        if(completelyDestroyCIDs.length > 0){
+          this.pushWithReply(null, "cids_destroyed", {cids: completelyDestroyCIDs}, (resp) => {
+            this.rendered.pruneCIDs(resp.cids)
+          })
+        }
       })
     }
   }

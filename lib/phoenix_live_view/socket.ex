@@ -23,6 +23,7 @@ defmodule Phoenix.LiveView.Socket do
   The LiveView socket for Phoenix Endpoints.
   """
   use Phoenix.Socket
+
   require Logger
 
   if Version.match?(System.version(), ">= 1.8.0") do
@@ -39,7 +40,7 @@ defmodule Phoenix.LiveView.Socket do
             router: nil,
             assigns: %{},
             changed: %{},
-            private: %{},
+            private: %{changed: %{}},
             fingerprints: Phoenix.LiveView.Diff.new_fingerprints(),
             redirected: nil,
             host_uri: nil,
@@ -49,22 +50,23 @@ defmodule Phoenix.LiveView.Socket do
   @type fingerprints :: {nil, map} | {binary, map}
 
   @type t :: %__MODULE__{
-    id: binary(),
-    endpoint: module(),
-    view: module(),
-    root_view: module(),
-    parent_pid: nil | pid(),
-    root_pid: pid(),
-    router: module(),
-    assigns: assigns,
-    changed: map(),
-    private: map(),
-    fingerprints: fingerprints,
-    redirected: nil | tuple(),
-    host_uri: URI.t(),
-    connected?: boolean()
-  }
+          id: binary(),
+          endpoint: module(),
+          view: module(),
+          root_view: module(),
+          parent_pid: nil | pid(),
+          root_pid: pid(),
+          router: module(),
+          assigns: assigns,
+          changed: map(),
+          private: map(),
+          fingerprints: fingerprints,
+          redirected: nil | tuple(),
+          host_uri: URI.t(),
+          connected?: boolean()
+        }
 
+  channel "lvu:*", Phoenix.LiveView.UploadChannel
   channel "lv:*", Phoenix.LiveView.Channel
 
   @doc """

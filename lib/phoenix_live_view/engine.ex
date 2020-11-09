@@ -35,15 +35,15 @@ defmodule Phoenix.LiveView.Component do
           </div>
 
       Components are also allowed inside Elixir's special forms, such as
-      `if`, `for`, `case`, and friends. So while this does not work:
+      `if`, `for`, `case`, and friends.
 
-          <%= Enum.map(items, fn item -> %>
+          <%= for item <- items do %>
             <%= live_component @socket, SomeComponent, id: item %>
           <% end %>
 
-      Since the component was given to `Enum.map/2`, this does:
+      However, using other module functions such as `Enum`, will not work:
 
-          <%= for item <- items do %>
+          <%= Enum.map(items, fn item -> %>
             <%= live_component @socket, SomeComponent, id: item %>
           <% end %>
       """
@@ -107,7 +107,7 @@ defmodule Phoenix.LiveView.Rendered do
   @type t :: %__MODULE__{
           static: [String.t()],
           dynamic:
-            (map | nil ->
+            (boolean() ->
                [
                  nil
                  | iodata()
@@ -162,24 +162,25 @@ defmodule Phoenix.LiveView.Engine do
   allows the Elixir compiler to optimize this list and avoid
   allocating its strings on every render.
 
-  The `:dynamic` field contains a list of dynamic content.
+  The `:dynamic` field contains a function that takes a boolean argument
+  (see "Tracking changes" below), and returns a list of dynamic content.
   Each element in the list is either one of:
 
     1. iodata - which is the dynamic content
-    2. nil - the dynamic content did not change, see "Tracking changes" below
+    2. nil - the dynamic content did not change
     3. another `Phoenix.LiveView.Rendered` struct, see "Nesting and fingerprinting" below
     4. a `Phoenix.LiveView.Comprehension` struct, see "Comprehensions" below
-    4. a `Phoenix.LiveView.Component` struct, see "Component" below
+    5. a `Phoenix.LiveView.Component` struct, see "Component" below
 
   When you render a `.leex` template, you can convert the
-  rendered structure to iodata by intercalating the static
+  rendered structure to iodata by alternating the static
   and dynamic fields, always starting with a static entry
   followed by a dynamic entry. The last entry will always
   be static too. So the following structure:
 
       %Phoenix.LiveView.Rendered{
         static: ["foo", "bar", "baz"],
-        dynamic: ["left", "right"]
+        dynamic: fn track_changes? -> ["left", "right"] end
       }
 
   Results in the following content to be sent over the wire
@@ -197,11 +198,12 @@ defmodule Phoenix.LiveView.Engine do
   ## Tracking changes
 
   By default, a `.leex` template does not track changes.
-  Change tracking can be enabled by passing a changed
-  map when invoking the dynamic parts. The map should
-  contain the name of any changed field as key and the
-  boolean true as value. If a field is not listed in
-  `:changed`, then it is always considered unchanged.
+  Change tracking can be enabled by including a changed
+  map in the assigns with the key `__changed__` and passing
+  `true` to the dynamic parts. The map should contain
+  the name of any changed field as key and the boolean
+  true as value. If a field is not listed in `:changed`,
+  then it is always considered unchanged.
 
   If a field is unchanged and `.leex` believes a dynamic
   expression no longer needs to be computed, its value
@@ -405,18 +407,6 @@ defmodule Phoenix.LiveView.Engine do
 
   ## Optimize possible expressions into live structs (rendered / comprehensions)
 
-  defp to_live_struct({:live_component, meta, [_ | _] = args} = expr, vars, assigns) do
-    case Enum.split(args, -1) do
-      {args, [[do: do_block]]} ->
-        {args, vars, _} = analyze_list(args, vars, assigns, [])
-        do_block = maybe_block_to_rendered(do_block, vars)
-        to_safe({:live_component, meta, args ++ [[do: do_block]]}, true)
-
-      _ ->
-        to_safe(expr, true)
-    end
-  end
-
   defp to_live_struct({:for, _, [_ | _]} = expr, vars, _assigns) do
     with {:for, meta, [_ | _] = args} <- expr,
          {filters, [[do: {:__block__, _, block}]]} <- Enum.split(args, -1),
@@ -440,9 +430,29 @@ defmodule Phoenix.LiveView.Engine do
 
   defp to_live_struct({macro, meta, [_ | _] = args} = expr, vars, assigns)
        when is_atom(macro) do
-    if classify_taint(macro, args) == :live do
+    if classify_taint(macro, args) in [:live, :render] do
       {args, [opts]} = Enum.split(args, -1)
-      {args, vars, _} = analyze_with_restricted_vars(args, vars, assigns)
+
+      # The reason we can safely ignore assigns here is because
+      # each branch in the live/render constructs are their own
+      # rendered struct and, if the rendered has a new fingerpint,
+      # then change tracking is fully disabled.
+      #
+      # For example, take this code:
+      #
+      #   <%= if @foo do %>
+      #     <%= @bar %>
+      #   <% else %>
+      #     <%= @baz %>
+      #   <% end %>
+      #
+      # In theory, @bar and @baz should be recomputed whenever
+      # @foo changes, because changing @foo may require a value
+      # that was not available on the page to show. However,
+      # given the branches have different fingerprints, the
+      # diff mechanism takes care of forcing all assigns to
+      # be rendered without us needing to handle it here.
+      {args, vars, _} = analyze_list(args, vars, assigns, [])
 
       opts =
         for {key, value} <- opts do
@@ -460,16 +470,14 @@ defmodule Phoenix.LiveView.Engine do
   end
 
   defp maybe_block_to_rendered([{:->, _, _} | _] = blocks, vars) do
-    # First collect all vars across all assigns since cond/case may be linear
-    {blocks, {vars, assigns}} =
-      Enum.map_reduce(blocks, {vars, %{}}, fn
-        {:->, meta, [args, block]}, {vars, assigns} ->
-          {args, vars, assigns} = analyze_list(args, vars, assigns, [])
-          {{:->, meta, [args, block]}, {vars, assigns}}
-      end)
-
-    # Now convert blocks
     for {:->, meta, [args, block]} <- blocks do
+      # Variables defined in the head should not taint the whole body,
+      # only their usage within the body.
+      {args, match_vars, assigns} = analyze_list(args, vars, %{}, [])
+
+      # So we collect them as usual but keep the original tainting.
+      vars = reset_vars(vars, match_vars)
+
       case to_rendered_struct(block, vars, assigns) do
         {:ok, rendered} -> {:->, meta, [args, rendered]}
         :error -> {:->, meta, [args, block]}
@@ -692,7 +700,7 @@ defmodule Phoenix.LiveView.Engine do
           {_, map} -> {expr, {:tainted, map}, assigns}
         end
 
-      :component ->
+      :render ->
         {args, [opts]} = Enum.split(args, -1)
         {args, vars, assigns} = analyze_list(args, vars, assigns, [])
         {opts, vars, assigns} = analyze_with_restricted_vars(opts, vars, assigns)
@@ -774,53 +782,48 @@ defmodule Phoenix.LiveView.Engine do
     to_safe(ast, false)
   end
 
-  defp to_safe(ast, false) do
-    to_safe(ast, line_from_expr(ast), [])
-  end
-
-  defp to_safe(ast, true) do
-    line = line_from_expr(ast)
-
-    extra_clauses =
-      quote generated: true do
-        %{__struct__: Phoenix.LiveView.Rendered} = other -> other
-        %{__struct__: Phoenix.LiveView.Component} = other -> other
-        %{__struct__: Phoenix.LiveView.Comprehension} = other -> other
-      end
-
-    to_safe(ast, line, extra_clauses)
+  defp to_safe(ast, bool) do
+    to_safe(ast, line_from_expr(ast), bool)
   end
 
   defp line_from_expr({_, meta, _}) when is_list(meta), do: Keyword.get(meta, :line, 0)
   defp line_from_expr(_), do: 0
 
-  # We can do the work at compile time
-  defp to_safe(literal, _line, _extra_clauses)
+  defp to_safe(literal, _line, _extra_clauses?)
        when is_binary(literal) or is_atom(literal) or is_number(literal) do
     Phoenix.HTML.Safe.to_iodata(literal)
   end
 
-  # We can do the work at runtime
-  defp to_safe(literal, line, _extra_clauses) when is_list(literal) do
+  defp to_safe(literal, line, _extra_clauses?) when is_list(literal) do
     quote line: line, do: Phoenix.HTML.Safe.List.to_iodata(unquote(literal))
   end
 
-  defp to_safe(expr, line, extra_clauses) do
-    # Keep stacktraces for protocol dispatch and coverage
-    safe_return = quote line: line, do: data
-    bin_return = quote line: line, do: Plug.HTML.html_escape_to_iodata(bin)
-    other_return = quote line: line, do: Phoenix.HTML.Safe.to_iodata(other)
+  defp to_safe(expr, line, false) do
+    quote line: line, do: unquote(__MODULE__).safe_to_iodata(unquote(expr))
+  end
 
-    # However ignore them for the generated clauses to avoid warnings
-    clauses =
-      quote generated: true do
-        {:safe, data} -> unquote(safe_return)
-        bin when is_binary(bin) -> unquote(bin_return)
-        other -> unquote(other_return)
-      end
+  defp to_safe(expr, line, true) do
+    quote line: line, do: unquote(__MODULE__).live_to_iodata(unquote(expr))
+  end
 
-    quote generated: true do
-      case unquote(expr), do: unquote(extra_clauses ++ clauses)
+  @doc false
+  def safe_to_iodata(expr) do
+    case expr do
+      {:safe, data} -> data
+      bin when is_binary(bin) -> Plug.HTML.html_escape_to_iodata(bin)
+      other -> Phoenix.HTML.Safe.to_iodata(other)
+    end
+  end
+
+  @doc false
+  def live_to_iodata(expr) do
+    case expr do
+      {:safe, data} -> data
+      %{__struct__: Phoenix.LiveView.Rendered} = other -> other
+      %{__struct__: Phoenix.LiveView.Component} = other -> other
+      %{__struct__: Phoenix.LiveView.Comprehension} = other -> other
+      bin when is_binary(bin) -> Plug.HTML.html_escape_to_iodata(bin)
+      other -> Phoenix.HTML.Safe.to_iodata(other)
     end
   end
 
@@ -887,8 +890,9 @@ defmodule Phoenix.LiveView.Engine do
   defp classify_taint(:receive, [_]), do: :live
   defp classify_taint(:with, _), do: :live
 
-  defp classify_taint(:live_component, [_, _, [do: _]]), do: :component
-  defp classify_taint(:live_component, [_, _, _, [do: _]]), do: :component
+  defp classify_taint(:live_component, [_, _, [do: _]]), do: :render
+  defp classify_taint(:live_component, [_, _, _, [do: _]]), do: :render
+  defp classify_taint(:render_layout, [_, _, _, [do: _]]), do: :render
 
   defp classify_taint(:alias, [_]), do: :always
   defp classify_taint(:import, [_]), do: :always

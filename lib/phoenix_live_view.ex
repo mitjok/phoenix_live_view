@@ -359,6 +359,7 @@ defmodule Phoenix.LiveView do
     * [Live Navigation](live-navigation.md)
     * [Security considerations of the LiveView model](security-model.md)
     * [Telemetry](telemetry.md)
+    * [Uploads](uploads.md)
     * [Using Gettext for internationalization](using-gettext.md)
 
   ## Client-side
@@ -369,7 +370,7 @@ defmodule Phoenix.LiveView do
     * [Form bindings](form-bindings.md)
     * [DOM patching and temporary assigns](dom-patching.md)
     * [JavaScript interoperability](js-interop.md)
-
+    * [Uploads (External)](uploads-external.md)
   '''
 
   alias Phoenix.LiveView.Socket
@@ -395,7 +396,9 @@ defmodule Phoenix.LiveView do
   `options` is one of:
 
     * `:temporary_assigns` - a keyword list of assigns that are temporary
-      and must be reset to their value after every render
+      and must be reset to their value after every render. Note that once
+      the value is reset, it won't be re-rendered again until it is explicitly
+      assigned
 
     * `:layout` - the optional layout to be used by the LiveView
 
@@ -424,12 +427,16 @@ defmodule Phoenix.LiveView do
   @callback handle_info(msg :: term, socket :: Socket.t()) ::
               {:noreply, Socket.t()}
 
+  @callback handle_cast(msg :: term, socket :: Socket.t()) ::
+              {:noreply, Socket.t()}
+
   @optional_callbacks mount: 3,
                       terminate: 2,
                       handle_params: 3,
                       handle_event: 3,
                       handle_call: 3,
-                      handle_info: 2
+                      handle_info: 2,
+                      handle_cast: 2
 
   @doc """
   Uses LiveView in the current module to mark it a LiveView.
@@ -529,12 +536,11 @@ defmodule Phoenix.LiveView do
 
   ## Referencing parent assigns
 
-  When a LiveView is mounted in a disconnected state, the Plug.Conn assigns
+  When a LiveView is mounted in a disconnected state, the `Plug.Conn` assigns
   will be available for reference via `assign_new/3`, allowing assigns to
-  be shared for the initial HTTP request. On connected mount, `assign_new/3`
-  will be invoked, and the LiveView will use its session to rebuild the
-  originally shared assign. Likewise, nested LiveView children have access
-  to their parent's assigns on mount using `assign_new`, which allows
+  be shared for the initial HTTP request. The `Plug.Conn` assigns will not be
+  available during the connected mount. Likewise, nested LiveView children have
+  access to their parent's assigns on mount using `assign_new`, which allows
   assigns to be shared down the nested LiveView tree.
 
   ## Examples
@@ -571,14 +577,14 @@ defmodule Phoenix.LiveView do
   @doc """
   Adds key value pairs to socket assigns.
 
-  A single key value pair may be passed, or a keyword list
-  of assigns may be provided to be merged into existing
-  socket assigns.
+  A single key value pair may be passed, or a keyword list or a map
+  of assigns may be provided to be merged into existing socket assigns.
 
   ## Examples
 
       iex> assign(socket, :name, "Elixir")
       iex> assign(socket, name: "Elixir", logo: "💧")
+      iex> assign(socket, %{name: "Elixir"})
   """
   def assign(%Socket{} = socket, key, value) do
     validate_assign_key!(key)
@@ -622,7 +628,7 @@ defmodule Phoenix.LiveView do
   end
 
   @doc """
-  Adds a flash message to the socket to be displayed on redirect.
+  Adds a flash message to the socket to be displayed.
 
   *Note*: While you can use `put_flash/3` inside a `Phoenix.LiveComponent`,
   components have their own `@flash` assigns. The `@flash` assign
@@ -674,9 +680,159 @@ defmodule Phoenix.LiveView do
 
   ## Examples
 
-      {:noreply, push_event(socket, "scores", %{points: 100, user: "josé"})}}
+      {:noreply, push_event(socket, "scores", %{points: 100, user: "josé"})}
   """
   defdelegate push_event(socket, event, payload), to: Phoenix.LiveView.Utils
+
+  @doc ~S"""
+  Allows an upload for the provided name.
+
+  ## Options
+
+    * `:accept` - Required. A list of unique file type specifiers or the
+      atom :any to allow any kind of file. For example, `[".jpeg"]`, `:any`, etc.
+
+    * `:max_entries` - The maximum number of selected files to allow per
+      file input. Defaults to 1.
+
+    * `:max_file_size` - The maximum file size in bytes to allow to be uploaded.
+      Defaults 8MB. For example, `12_000_000`.
+
+    * `:chunk_size` - The chunk size in bytes to send when uploading.
+      Defaults `64_000`.
+
+    * `:chunk_timeout` - The time in milliseconds to wait before closing the
+      upload channel when a new chunk has not been received. Defaults `10_000`.
+
+    * `:external` - The 2-arity function for generating metadata for external
+      client uploaders. See the Uploads section for example usage.
+
+    * `:progress` - The optional 3-arity function for receiving progress events
+
+    * `:auto_upload` - Instructs the client to upload the file automatically
+      on file selection instead of waiting for form submits. Default false.
+
+  Raises when a previously allowed upload under the same name is still active.
+
+  ## Examples
+
+      allow_upload(socket, :avatar, accept: ~w(.jpg .jpeg), max_entries: 2)
+      allow_upload(socket, :avatar, accept: :any)
+
+  For consuming files automatically as they are uploaded, you can pair `auto_upload: true` with
+  a custom progress function to consume the entries as they are completed. For example:
+
+      allow_upload(socket, :avatar, accept: :any, progress: &handle_progress/3, auto_upload: true)
+
+      defp handle_progress(:avatar, entry, socket) do
+        if entry.done? do
+          uploaded_file =
+            consume_uploaded_entry(socket, entry, fn %{} = meta ->
+              ...
+            end)
+
+          {:noreply, put_flash(socket, :info, "file #{uploaded_file.name} uploaded")
+        else
+          {:noreply, socket}
+        end
+      end
+  """
+  defdelegate allow_upload(socket, name, options), to: Phoenix.LiveView.Upload
+
+  @doc """
+  Revokes a previously allowed upload from `allow_upload/3`.
+
+  ## Examples
+
+      disallow_upload(socket, :avatar)
+  """
+  defdelegate disallow_upload(socket, name), to: Phoenix.LiveView.Upload
+
+  @doc """
+  Cancels an upload for the given entry.
+
+  ## Examples
+
+      <%= for entry <- @uploads.avatar.entries do %>
+        ...
+        <button phx-click="cancel-upload" phx-value-ref="<%= entry.ref %>">cancel</button>
+      <% end %>
+
+      def handle_event("cancel-upload", %{"ref" => ref}, socket) do
+        {:noreply, cancel_upload(socket, :avatar, ref)}
+      end
+  """
+  defdelegate cancel_upload(socket, name, entry_ref), to: Phoenix.LiveView.Upload
+
+  @doc """
+  Returns the completed and in progress entries for the upload.
+
+  ## Examples
+
+      case uploaded_entries(socket, :photos) do
+        {[_ | _] = completed, []} ->
+          # all entries are completed
+
+        {[], [_ | _] = in_progress} ->
+          # all entries are still in progress
+      end
+  """
+  defdelegate uploaded_entries(socket, name), to: Phoenix.LiveView.Upload
+
+  @doc ~S"""
+  Consumes the uploaded entries.
+
+  Raises when there are still entries in progress.
+  Typically called when submitting a form to handle the
+  uploaded entries alongside the form data. For form submissions,
+  it is guaranteed that all entries have completed before the submit event
+  is invoked. Once entries are consumed, they are removed from the upload.
+
+  ## Examples
+
+      def handle_event("save", _params, socket) do
+        uploaded_files =
+          consume_uploaded_entries(socket, :avatar, fn %{path: path}, _entry ->
+            dest = Path.join("priv/static/uploads", Path.basename(path))
+            File.cp!(path, dest)
+            Routes.static_path(socket, "/uploads/#{Path.basename(dest)}")
+          end)
+        {:noreply, update(socket, :uploaded_files, &(&1 ++ uploaded_files))}
+      end
+  """
+  defdelegate consume_uploaded_entries(socket, name, func), to: Phoenix.LiveView.Upload
+
+  @doc ~S"""
+  Consumes an individual uploaded entry.
+
+  Raises when the entry is still in progress.
+  Typically called when submitting a form to handle the
+  uploaded entries alongside the form data. Once entries are consumed,
+  they are removed from the upload.
+
+  This is a lower-level feature than `consume_uploaded_entries/3` and useful
+  for scenarios where you want to consume entries as they are individually completed.
+
+  ## Examples
+
+      def handle_event("save", _params, socket) do
+        case uploaded_entries(socket, :avatar) do
+          {[_|_] = entries, []} ->
+            uploaded_files = for entry <- entries do
+              consume_uploaded_entry(socket, entry, fn %{path: path} ->
+                dest = Path.join("priv/static/uploads", Path.basename(path))
+                File.cp!(path, dest)
+                Routes.static_path(socket, "/uploads/#{Path.basename(dest)}")
+              end)
+            end
+            {:noreply, update(socket, :uploaded_files, &(&1 ++ uploaded_files))}
+
+          _ ->
+            {:noreply, socket}
+        end
+      end
+  """
+  defdelegate consume_uploaded_entry(socket, entry, func), to: Phoenix.LiveView.Upload
 
   @doc """
   Annotates the socket for redirect to a destination path.
@@ -691,15 +847,17 @@ defmodule Phoenix.LiveView do
     * `:to` - the path to redirect to. It must always be a local path
     * `:external` - an external path to redirect to
   """
-  def redirect(%Socket{} = socket, opts) do
-    url =
-      cond do
-        to = opts[:to] -> validate_local_url!(to, "redirect/2")
-        external = opts[:external] -> external
-        true -> raise ArgumentError, "expected :to or :external option in redirect/2"
-      end
-
+  def redirect(%Socket{} = socket, to: url) do
+    validate_local_url!(url, "redirect/2")
     put_redirect(socket, {:redirect, %{to: url}})
+  end
+
+  def redirect(%Socket{} = socket, external: url) do
+    put_redirect(socket, {:redirect, %{external: url}})
+  end
+
+  def redirect(%Socket{}, _) do
+    raise ArgumentError, "expected :to or :external option in redirect/2"
   end
 
   @doc """
@@ -896,12 +1054,12 @@ defmodule Phoenix.LiveView do
   assign on mount:
 
       def mount(params, session, socket) do
-        {:ok, assign(socket, static_changed?: static_changed?(socket))}
+        {:ok, assign(socket, static_change: static_changed?(socket))}
       end
 
   And then in your views:
 
-      <%= if @static_change do %>
+      <%= if @static_changed? do %>
         <div id="reload-static">
           The app has been updated. Click here to <a href="#" onclick="window.location.reload()">reload</a>.
         </div>
@@ -994,7 +1152,7 @@ defmodule Phoenix.LiveView do
         {:noreply, socket}
       end
   """
-  def send_update(module, assigns) do
+  def send_update(module, assigns) when is_atom(module) do
     assigns = Enum.into(assigns, %{})
 
     id =
@@ -1002,6 +1160,28 @@ defmodule Phoenix.LiveView do
         raise ArgumentError, "missing required :id in send_update. Got: #{inspect(assigns)}"
 
     Phoenix.LiveView.Channel.send_update(module, id, assigns)
+  end
+
+  @doc """
+  Similar to `send_update/2` but the update will be delayed according to the given `time_in_milliseconds`.
+
+  ## Examples
+
+      def handle_event("cancel-order", _, socket) do
+        ...
+        send_update_after(Cart, [id: "cart", status: "cancelled"], 3000)
+        {:noreply, socket}
+      end
+  """
+  def send_update_after(module, assigns, time_in_milliseconds)
+      when is_atom(module) and is_integer(time_in_milliseconds) do
+    assigns = Enum.into(assigns, %{})
+
+    id =
+      assigns[:id] ||
+        raise ArgumentError, "missing required :id in send_update_after. Got: #{inspect(assigns)}"
+
+    Phoenix.LiveView.Channel.send_update_after(module, id, assigns, time_in_milliseconds)
   end
 
   @doc """

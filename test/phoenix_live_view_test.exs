@@ -13,7 +13,7 @@ defmodule Phoenix.LiveViewUnitTest do
               view: Phoenix.LiveViewTest.ParamCounterLive,
               root_view: Phoenix.LiveViewTest.ParamCounterLive
             },
-            %{connect_params: %{}, connect_info: %{}},
+            %{connect_params: %{}, connect_info: %{}, changed: %{}},
             nil,
             %{},
             URI.parse("https://www.example.com")
@@ -185,9 +185,17 @@ defmodule Phoenix.LiveViewUnitTest do
     test "keeps whole maps in changes" do
       socket = assign(@socket, existing: %{foo: :bar})
       socket = Utils.clear_changed(socket)
+
       socket = assign(socket, existing: %{foo: :baz})
+      assert socket.assigns.existing == %{foo: :baz}
       assert socket.changed.existing == %{foo: :bar}
+
       socket = assign(socket, existing: %{foo: :bat})
+      assert socket.assigns.existing == %{foo: :bat}
+      assert socket.changed.existing == %{foo: :bar}
+
+      socket = assign(socket, %{existing: %{foo: :bam}})
+      assert socket.assigns.existing == %{foo: :bam}
       assert socket.changed.existing == %{foo: :bar}
     end
   end
@@ -203,7 +211,6 @@ defmodule Phoenix.LiveViewUnitTest do
       assert socket.assigns == %{
                existing: "existing",
                notexisting: "new-notexisting",
-               live_module: Phoenix.LiveViewTest.ParamCounterLive,
                live_action: nil,
                flash: %{}
              }
@@ -221,7 +228,6 @@ defmodule Phoenix.LiveViewUnitTest do
                existing: "existing-parent",
                existing2: "existing2",
                notexisting: "new-notexisting",
-               live_module: Phoenix.LiveViewTest.ParamCounterLive,
                live_action: nil,
                flash: %{}
              }
@@ -243,7 +249,7 @@ defmodule Phoenix.LiveViewUnitTest do
 
     test "allows external paths" do
       assert redirect(@socket, external: "http://foo.com/bar").redirected ==
-               {:redirect, %{to: "http://foo.com/bar"}}
+               {:redirect, %{external: "http://foo.com/bar"}}
     end
   end
 

@@ -1,7 +1,7 @@
 defmodule Phoenix.LiveView.EngineTest do
   use ExUnit.Case, async: true
 
-  alias Phoenix.LiveView.{Engine, Rendered}
+  alias Phoenix.LiveView.{Engine, Rendered, Component}
 
   def safe(do: {:safe, _} = safe), do: safe
   def unsafe(do: {:safe, content}), do: content
@@ -385,10 +385,8 @@ defmodule Phoenix.LiveView.EngineTest do
       assert [%Rendered{dynamic: ["true"], static: ["one", "two"]}] =
                changed(template, %{foo: true}, nil)
 
-      assert changed(template, %{foo: true}, %{}) ==
-               [nil]
-
-      assert [""] = changed(template, %{foo: false}, %{foo: true})
+      assert changed(template, %{foo: true}, %{}) == [nil]
+      assert changed(template, %{foo: false}, %{foo: true}) == [""]
     end
 
     test "converts if-do-else into rendered with dynamic condition" do
@@ -454,6 +452,27 @@ defmodule Phoenix.LiveView.EngineTest do
              ] = changed(template, %{foo: 123}, %{foo: true})
     end
 
+    test "converts if-do if-do with var into rendered" do
+      template = "<%= if var = @foo do %>one<%= if var do %>uno<%= var %>dos<% end %>two<% end %>"
+
+      assert [
+               %Rendered{
+                 dynamic: [%Rendered{dynamic: ["123"], static: ["uno", "dos"]}],
+                 static: ["one", "two"]
+               }
+             ] = changed(template, %{foo: 123}, nil)
+
+      assert changed(template, %{foo: 123}, %{}) ==
+               [nil]
+
+      assert [
+               %Rendered{
+                 dynamic: [%Rendered{dynamic: ["123"], static: ["uno", "dos"]}],
+                 static: ["one", "two"]
+               }
+             ] = changed(template, %{foo: 123}, %{foo: true})
+    end
+
     test "does not convert if-do-else in the wrong format" do
       template = "<%= if @bar do @foo else @baz end %>"
 
@@ -496,6 +515,57 @@ defmodule Phoenix.LiveView.EngineTest do
 
       assert [%Rendered{dynamic: ["123"], static: ["one", "two"]}] =
                changed(template, %{foo: 123}, %{foo: true})
+    end
+
+    test "converts case into rendered with vars in head" do
+      template = "<%= case true do %><% x when x == true -> %>one<%= @foo %>two<% end %>"
+
+      assert [%Rendered{dynamic: ["123"], static: ["one", "two"]}] =
+               changed(template, %{foo: 123}, nil)
+
+      assert changed(template, %{foo: 123}, %{}) ==
+               [nil]
+
+      assert [%Rendered{dynamic: ["123"], static: ["one", "two"]}] =
+               changed(template, %{foo: 123}, %{foo: true})
+
+      template = "<%= case @foo do %><% x -> %>one<%= x %>two<% end %>"
+
+      assert [%Rendered{dynamic: ["123"], static: ["one", "two"]}] =
+               changed(template, %{foo: 123}, nil)
+
+      assert changed(template, %{foo: 123}, %{}) ==
+               [nil]
+
+      assert [%Rendered{dynamic: ["123"], static: ["one", "two"]}] =
+               changed(template, %{foo: 123}, %{foo: true})
+    end
+
+    test "converts case into rendered with vars in head and body" do
+      template = "<%= case 456 do %><% x -> %>one<%= @foo %>two<%= x %>three<% end %>"
+
+      assert [%Rendered{dynamic: ["123", "456"], static: ["one", "two", "three"]}] =
+               changed(template, %{foo: 123}, nil)
+
+      assert changed(template, %{foo: 123}, %{}) ==
+               [nil]
+
+      assert [%Rendered{dynamic: ["123", "456"], static: ["one", "two", "three"]}] =
+               changed(template, %{foo: 123}, %{foo: true})
+
+      template = "<%= case @bar do %><% x -> %>one<%= @foo %>two<%= x %>three<% end %>"
+
+      assert [%Rendered{dynamic: ["123", "456"], static: ["one", "two", "three"]}] =
+               changed(template, %{foo: 123, bar: 456}, nil)
+
+      assert changed(template, %{foo: 123, bar: 456}, %{}) ==
+               [nil]
+
+      assert [%Rendered{dynamic: ["123", "456"], static: ["one", "two", "three"]}] =
+               changed(template, %{foo: 123, bar: 456}, %{foo: true})
+
+      assert [%Rendered{dynamic: [nil, "456"], static: ["one", "two", "three"]}] =
+               changed(template, %{foo: 123, bar: 456}, %{bar: true})
     end
 
     test "converts multiple case into rendered with dynamic condition" do
@@ -563,6 +633,37 @@ defmodule Phoenix.LiveView.EngineTest do
              ] = changed(template, %{foo: 123}, %{foo: true})
     end
 
+    test "converts case with for into rendered" do
+      template = "<%= case @foo do %><% val -> %><%= for i <- val do %><%= i %><% end %><% end %>"
+
+      assert [
+               %Phoenix.LiveView.Rendered{
+                 dynamic: [
+                   %Phoenix.LiveView.Comprehension{
+                     static: ["", ""],
+                     dynamics: [["1"], ["2"], ["3"]]
+                   }
+                 ],
+                 static: ["", ""]
+               }
+             ] = changed(template, %{foo: 1..3}, nil)
+
+      assert changed(template, %{foo: 1..3}, %{}) ==
+               [nil]
+
+      assert [
+               %Phoenix.LiveView.Rendered{
+                 dynamic: [
+                   %Phoenix.LiveView.Comprehension{
+                     static: ["", ""],
+                     dynamics: [["1"], ["2"], ["3"]]
+                   }
+                 ],
+                 static: ["", ""]
+               }
+             ] = changed(template, %{foo: 1..3}, %{foo: true})
+    end
+
     test "does not convert cases in the wrong format" do
       template = "<%= case @bar do true -> @foo; false -> @baz end %>"
 
@@ -622,13 +723,13 @@ defmodule Phoenix.LiveView.EngineTest do
 
       assert [nil] = changed(template, %{foo: 123, bar: false, baz: 456}, %{})
 
-      assert [%Rendered{dynamic: ["456"], static: ["uno", "dos"], fingerprint: ^fpfalse}] =
+      assert [%Rendered{dynamic: [nil], static: ["uno", "dos"], fingerprint: ^fpfalse}] =
                changed(template, %{foo: 123, bar: false, baz: 456}, %{foo: true, bar: true})
 
       assert [%Rendered{dynamic: [nil], static: ["uno", "dos"], fingerprint: ^fpfalse}] =
                changed(template, %{foo: 123, bar: false, baz: 456}, %{foo: true})
 
-      assert [%Rendered{dynamic: ["456"], static: ["uno", "dos"], fingerprint: ^fpfalse}] =
+      assert [%Rendered{dynamic: [nil], static: ["uno", "dos"], fingerprint: ^fpfalse}] =
                changed(template, %{foo: 123, bar: false, baz: 456}, %{bar: true})
 
       assert [%Rendered{dynamic: ["456"], static: ["uno", "dos"], fingerprint: ^fpfalse}] =
@@ -691,10 +792,24 @@ defmodule Phoenix.LiveView.EngineTest do
 
   describe "integration" do
     defmodule View do
-      use Phoenix.View, root: "test/fixtures/templates", path: ""
+      use Phoenix.View, root: "test/support/templates", path: ""
     end
 
-    @assigns %{pre: "pre", inner: "inner", post: "post"}
+    defmodule SampleComponent do
+      use Phoenix.LiveComponent
+      def render(assigns), do: ~L"FROM COMPONENT"
+    end
+
+    defmacrop compile(string) do
+      EEx.compile_string(string, engine: Engine, file: __CALLER__.file, line: __CALLER__.line + 1)
+    end
+
+    @assigns %{
+      pre: "pre",
+      inner_content: "inner",
+      post: "post",
+      socket: %Phoenix.LiveView.Socket{}
+    }
 
     test "renders live engine to string" do
       assert Phoenix.View.render_to_string(View, "inner_live.html", @assigns) == "live: inner"
@@ -745,6 +860,20 @@ defmodule Phoenix.LiveView.EngineTest do
     test "renders dead engine with nested live view" do
       assert Phoenix.View.render(View, "dead_with_live.html", @assigns) ==
                {:safe, ["pre: ", "pre", "\n", ["live: ", "inner", ""], "\npost: ", "post"]}
+    end
+
+    test "renders inside render_layout/4" do
+      import Phoenix.View
+      assigns = @assigns
+
+      assert %Rendered{} =
+               compile("""
+               <%= render_layout(View, "inner_live.html", %{}) do %>
+                 WITH COMPONENT:
+                 <%= %Component{assigns: %{}, component: SampleComponent} %>
+               <% end %>
+               """)
+               |> expand_rendered(true)
     end
   end
 
