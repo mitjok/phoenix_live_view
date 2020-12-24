@@ -352,7 +352,7 @@ defmodule Phoenix.LiveComponent do
   LiveViews themselves.
 
   Therefore it is your responsibility to keep only the assigns necessary
-  in each component. For example, avoid passing all of LiveView components
+  in each component. For example, avoid passing all of LiveView's assigns
   when rendering a component:
 
       <%= live_component @socket, MyComponent, assigns %>
@@ -366,7 +366,7 @@ defmodule Phoenix.LiveComponent do
   the view and the component will share the same copies of the `@user`
   and `@org` assigns.
 
-  You should also avoid using components to provide abstract DOM
+  You should also avoid using stateful components to provide abstract DOM
   components. As a guideline, a good LiveComponent encapsulates
   application concerns and not DOM functionality. For example, if you
   have a page that shows products for sale, you can encapsulate the
@@ -375,7 +375,7 @@ defmodule Phoenix.LiveComponent do
   do not write a component that is simply encapsulating generic DOM
   components. For instance, do not do this:
 
-      defmodule MyButton
+      defmodule MyButton do
         use Phoenix.LiveComponent
 
         def render(assigns) do

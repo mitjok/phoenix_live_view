@@ -931,7 +931,7 @@ defmodule Phoenix.LiveViewTest do
   @doc """
   Builds a file input for testing uploads within a form.
 
-  Given the form DOM ID, the upload name, and a map of client metadata
+  Given the form DOM selector, the upload name, and a list of maps of client metadata
   for the upload, the returned file input can be passed to `render_upload/2`.
 
   Client metadata takes the following form:
@@ -944,26 +944,27 @@ defmodule Phoenix.LiveViewTest do
 
   ## Examples
 
-      avatar = file_input(lv, "my-form-id", :avatar, %{
+      avatar = file_input(lv, "#my-form-id", :avatar, [%{
         last_modified: 1_594_171_879_000,
         name: "myfile.jpeg",
         content: File.read!("myfile.jpg"),
         size: 1_396_009,
         type: "image/jpeg"
-      })
+      }])
 
       assert render_upload(avatar, "foo.jpeg") =~ "100%"
   """
   defmacro file_input(view, form_selector, name, entries) do
     quote bind_quoted: [view: view, selector: form_selector, name: name, entries: entries] do
-      case Phoenix.LiveView.Channel.fetch_upload_config(view.pid, name) do
+      cid = Phoenix.LiveViewTest.__find_cid__!(view, selector)
+      case Phoenix.LiveView.Channel.fetch_upload_config(view.pid, name, cid) do
         {:ok, %{external: false}} ->
           require Phoenix.ChannelTest
           builder = fn -> Phoenix.ChannelTest.connect(Phoenix.LiveView.Socket, %{}, %{}) end
-          Phoenix.LiveViewTest.__start_upload_client__(builder, view, selector, name, entries)
+          Phoenix.LiveViewTest.__start_upload_client__(builder, view, selector, name, entries, cid)
 
         {:ok, %{external: func}} when is_function(func) ->
-          Phoenix.LiveViewTest.__start_external_upload_client__(view, selector, name, entries)
+          Phoenix.LiveViewTest.__start_external_upload_client__(view, selector, name, entries, cid)
 
         :error ->
           raise "no uploads allowed for #{name}"
@@ -971,19 +972,38 @@ defmodule Phoenix.LiveViewTest do
     end
   end
 
-  def __start_upload_client__(socket_builder, view, form_selector, name, entries) do
-    {:ok, pid} =
-      UploadClient.start_link(
-        socket_builder: socket_builder,
-        test_supervisor: fetch_test_supervisor!()
-      )
-
-    Upload.new(pid, view, form_selector, name, entries)
+  def __find_cid__!(view, selector) do
+    html_tree = view |> render() |> DOM.parse()
+    case DOM.maybe_one(html_tree, selector) do
+      {:ok, form} -> if str = DOM.component_id(form), do: String.to_integer(str)
+      {:error, _reason, msg} -> raise ArgumentError, msg
+    end
   end
 
-  def __start_external_upload_client__(view, form_selector, name, entries) do
-    {:ok, pid} = UploadClient.start_link(test_supervisor: fetch_test_supervisor!())
-    Upload.new(pid, view, form_selector, name, entries)
+  def __start_upload_client__(socket_builder, view, form_selector, name, entries, cid) do
+    spec = %{
+      id: make_ref(),
+      start:
+        {UploadClient, :start_link,
+         [[socket_builder: socket_builder, cid: cid]]},
+      restart: :temporary
+    }
+
+    {:ok, pid} = Supervisor.start_child(fetch_test_supervisor!(), spec)
+
+    Upload.new(pid, view, form_selector, name, entries, cid)
+  end
+
+  def __start_external_upload_client__(view, form_selector, name, entries, cid) do
+    spec = %{
+      id: make_ref(),
+      start:
+        {UploadClient, :start_link,
+         [[cid: cid]]},
+      restart: :temporary
+    }
+    {:ok, pid} = Supervisor.start_child(fetch_test_supervisor!(), spec)
+    Upload.new(pid, view, form_selector, name, entries, cid)
   end
 
   @doc """
@@ -1123,16 +1143,22 @@ defmodule Phoenix.LiveViewTest do
   end
 
   defp maybe_wrap_html(view_or_element, content) do
-    case Floki.find(content, "html") do
-      [] ->
-        root_html = call(view_or_element, :html)
+    {html, static_path} = call(view_or_element, :html)
 
-        head =
-          case DOM.maybe_one(root_html, "head") do
-            {:ok, head} -> Floki.filter_out(head, "script")
-            _ -> {"head", [], []}
-          end
+    head =
+      case DOM.maybe_one(html, "head") do
+        {:ok, head} -> head
+        _ -> {"head", [], []}
+      end
 
+    case Floki.attribute(content, "data-phx-main") do
+      ["true" | _] ->
+        # If we are rendering the main LiveView,
+        # we return the full page html.
+        html
+      _ ->
+        # Otherwise we build a basic html structure around the
+        # view_or_element content.
         [
           {"html", [], [
              head,
@@ -1141,11 +1167,28 @@ defmodule Phoenix.LiveViewTest do
              ]}
           ]}
         ]
-
-      _ ->
-        Floki.filter_out(content, "script")
     end
+    |> Floki.traverse_and_update(fn
+      {"script", _, _} -> nil
+      {"a", _, _} = link -> link
+      {el, attrs, children} -> {el, maybe_prefix_static_path(attrs, static_path), children}
+      el -> el
+    end)
   end
+
+  defp maybe_prefix_static_path(attrs, nil), do: attrs
+
+  defp maybe_prefix_static_path(attrs, static_path) do
+    Enum.map(attrs, fn
+      {"src", path} -> {"src", prefix_static_path(path, static_path)}
+      {"href", path} -> {"href", prefix_static_path(path, static_path)}
+      attr -> attr
+    end)
+  end
+
+  defp prefix_static_path(<<"//" <> _::binary>> = url, _prefix), do: url
+  defp prefix_static_path(<<"/" <> _::binary>> = path, prefix), do: "file://#{Path.join([prefix, path])}"
+  defp prefix_static_path(url, _), do: url
 
   defp write_tmp_html_file(html) do
     html = Floki.raw_html(html)
@@ -1321,7 +1364,7 @@ defmodule Phoenix.LiveViewTest do
   """
   def preflight_upload(%Upload{} = upload) do
     # LiveView channel returns error conditions as error key in payload, ie `%{error: reason}`
-    case call(upload.element, {:render_event, upload.element, :allow_upload, upload.entries}) do
+    case call(upload.element, {:render_event, upload.element, :allow_upload, {upload.entries, upload.cid}}) do
       %{error: reason} -> {:error, reason}
       %{ref: _ref} = resp -> {:ok, resp}
     end

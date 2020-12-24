@@ -60,7 +60,7 @@ describe("View + DOM", function() {
       push(evt, payload, timeout) {
         expect(payload.value).toBe("increment=1")
         return {
-          receive() {}
+          receive(){ return this }
         }
       }
     }
@@ -75,6 +75,11 @@ describe("View + DOM", function() {
 
     let view = new View(el, liveSocket)
     let channelStub = {
+      leave(){
+        return {
+          receive(status, cb){ return this }
+        }
+      },
       push(evt, payload, timeout) {
         expect(payload.value).toBe("increment=1")
         return {
@@ -84,6 +89,7 @@ describe("View + DOM", function() {
               fingerprint: 123
             }
             cb(diff)
+            return this
           }
         }
       }
@@ -109,7 +115,7 @@ describe("View + DOM", function() {
         expect(payload.event).toBeDefined()
         expect(payload.value).toEqual({"value": "1"})
         return {
-          receive() {}
+          receive(){ return this }
         }
       }
     }
@@ -130,7 +136,7 @@ describe("View + DOM", function() {
       push(evt, payload, timeout) {
         expect(payload.value).toEqual({})
         return {
-          receive() {}
+          receive(){ return this }
         }
       }
     }
@@ -152,7 +158,7 @@ describe("View + DOM", function() {
       push(evt, payload, timeout) {
         expect(payload.value).toEqual({"value": "on"})
         return {
-          receive() {}
+          receive(){ return this }
         }
       }
     }
@@ -175,7 +181,7 @@ describe("View + DOM", function() {
       push(evt, payload, timeout) {
         expect(payload.value).toEqual({"value": "1"})
         return {
-          receive() {}
+          receive(){ return this }
         }
       }
     }
@@ -198,7 +204,7 @@ describe("View + DOM", function() {
         expect(payload.event).toBeDefined()
         expect(payload.value).toEqual({"key": "A", "value": "1"})
         return {
-          receive() {}
+          receive(){ return this }
         }
       }
     }
@@ -221,7 +227,7 @@ describe("View + DOM", function() {
         expect(payload.event).toBeDefined()
         expect(payload.value).toBe("increment=1&note=2&_target=increment")
         return {
-          receive() {}
+          receive(){ return this }
         }
       }
     }
@@ -259,32 +265,68 @@ describe("View + DOM", function() {
     expect(view.formsForRecovery().length).toBe(0)
   })
 
-  test("submitForm", function() {
-    expect.assertions(8)
+  describe("submitForm", function() {
+    test("submits payload", function() {
+      expect.assertions(3)
 
-    let liveSocket = new LiveSocket("/live", Socket)
-    let el = liveViewDOM()
-    let form = el.querySelector("form")
+      let liveSocket = new LiveSocket("/live", Socket)
+      let el = liveViewDOM()
+      let form = el.querySelector("form")
 
-    let view = new View(el, liveSocket)
-    let channelStub = {
-      push(evt, payload, timeout) {
-        expect(payload.type).toBe("form")
-        expect(payload.event).toBeDefined()
-        expect(payload.value).toBe("increment=1&note=2")
-        return {
-          receive() {}
+      let view = new View(el, liveSocket)
+      let channelStub = {
+        push(evt, payload, timeout) {
+          expect(payload.type).toBe("form")
+          expect(payload.event).toBeDefined()
+          expect(payload.value).toBe("increment=1&note=2")
+          return {
+            receive(){ return this }
+          }
         }
       }
-    }
-    view.channel = channelStub
+      view.channel = channelStub
+      view.submitForm(form, form, { target: form })
+    })
 
-    view.submitForm(form, form, { target: form })
-    expect(DOM.private(form, "phx-has-submitted")).toBeTruthy()
-    expect(form.classList.contains("phx-submit-loading")).toBeTruthy()
-    expect(form.querySelector("button").dataset.phxDisabled).toBeTruthy()
-    expect(form.querySelector("input").dataset.phxReadonly).toBeTruthy()
-    expect(form.querySelector("textarea").dataset.phxReadonly).toBeTruthy()
+    test("disables elements after submission", function() {
+      let liveSocket = new LiveSocket("/live", Socket)
+      let el = liveViewDOM()
+      let form = el.querySelector("form")
+
+      let view = new View(el, liveSocket)
+      stubChannel(view)
+
+      view.submitForm(form, form, { target: form })
+      expect(DOM.private(form, "phx-has-submitted")).toBeTruthy()
+      expect(form.classList.contains("phx-submit-loading")).toBeTruthy()
+      expect(form.querySelector("button").dataset.phxDisabled).toBeTruthy()
+      expect(form.querySelector("input").dataset.phxReadonly).toBeTruthy()
+      expect(form.querySelector("textarea").dataset.phxReadonly).toBeTruthy()
+    })
+
+    test("disables elements outside form", function() {
+      let liveSocket = new LiveSocket("/live", Socket)
+      let el = liveViewDOM(`
+      <form id="my-form">
+      </form>
+      <label for="plus">Plus</label>
+      <input id="plus" value="1" name="increment" form="my-form"/>
+      <textarea id="note" name="note" form="my-form">2</textarea>
+      <input type="checkbox" phx-click="toggle_me" form="my-form"/>
+      <button phx-click="inc_temperature" form="my-form">Inc Temperature</button>
+      `)
+      let form = el.querySelector("form")
+
+      let view = new View(el, liveSocket)
+      stubChannel(view)
+
+      view.submitForm(form, form, { target: form })
+      expect(DOM.private(form, "phx-has-submitted")).toBeTruthy()
+      expect(form.classList.contains("phx-submit-loading")).toBeTruthy()
+      expect(el.querySelector("button").dataset.phxDisabled).toBeTruthy()
+      expect(el.querySelector("input").dataset.phxReadonly).toBeTruthy()
+      expect(el.querySelector("textarea").dataset.phxReadonly).toBeTruthy()
+    })
   })
 
   describe("phx-trigger-action", () => {
@@ -641,7 +683,6 @@ describe("View Hooks", function() {
   test("hooks", async () => {
     let upcaseWasDestroyed = false
     let upcaseBeforeUpdate = false
-    let upcaseBeforeDestroy = false
     let Hooks = {
       Upcase: {
         mounted(){ this.el.innerHTML = this.el.innerHTML.toUpperCase() },
@@ -649,7 +690,6 @@ describe("View Hooks", function() {
         updated(){ this.el.innerHTML = this.el.innerHTML + " updated" },
         disconnected(){ this.el.innerHTML = "disconnected" },
         reconnected(){ this.el.innerHTML = "connected" },
-        beforeDestroy(){ upcaseBeforeDestroy = true },
         destroyed(){ upcaseWasDestroyed = true },
       }
     }
@@ -678,7 +718,6 @@ describe("View Hooks", function() {
     expect(view.el.firstChild.innerHTML).toBe("connected")
 
     view.update({s: ["<div></div>"], fingerprint: 123}, [])
-    expect(upcaseBeforeDestroy).toBe(true)
     expect(upcaseWasDestroyed).toBe(true)
   })
 
@@ -686,7 +725,6 @@ describe("View Hooks", function() {
     let values = []
     let Hooks = {
       Check: {
-        beforeDestroy(){ values.push("beforeDestroy") },
         destroyed(){ values.push("destroyed") },
       }
     }
@@ -703,7 +741,38 @@ describe("View Hooks", function() {
 
     view.destroy()
 
-    expect(values).toEqual(["beforeDestroy", "destroyed"])
+    expect(values).toEqual(["destroyed"])
+  })
+
+  test("view reconnected", async () => {
+    let values = []
+    let Hooks = {
+      Check: {
+        mounted(){ values.push("mounted") },
+        disconnected(){ values.push("disconnected") },
+        reconnected(){ values.push("reconnected") },
+      }
+    }
+    let liveSocket = new LiveSocket("/live", Socket, {hooks: Hooks})
+    let el = liveViewDOM()
+
+    let view = new View(el, liveSocket)
+
+    view.onJoin({rendered: {
+      s: [`<h2 id="check" phx-hook="Check"></h2>`],
+      fingerprint: 123
+    }})
+    expect(values).toEqual(["mounted"])
+
+    view.triggerReconnected()
+    // The hook hasn't disconnected, so it shouldn't receive "reconnected" message
+    expect(values).toEqual(["mounted"])
+
+    view.showLoader()
+    expect(values).toEqual(["mounted", "disconnected"])
+
+    view.triggerReconnected()
+    expect(values).toEqual(["mounted", "disconnected", "reconnected"])
   })
 
   test("dom hooks", async () => {
@@ -779,13 +848,80 @@ describe("View + Component", function() {
         expect(payload.value).toEqual({"value": "1"})
         expect(payload.cid).toEqual(0)
         return {
-          receive() {}
+          receive(){ return this }
         }
       }
     }
     view.channel = channelStub
 
     view.pushEvent("keyup", input, targetCtx, "click", {})
+  })
+
+  test("pushInput", function() {
+    expect.assertions(6)
+    let html =
+    `<form id="form" phx-change="validate">
+      <label for="first_name">First Name</label>
+      <input id="first_name" value="" name="user[first_name]" />
+
+      <label for="last_name">Last Name</label>
+      <input id="last_name" value="" name="user[last_name]" />
+    </form>`
+    let liveSocket = new LiveSocket("/live", Socket)
+    let el = liveViewDOM(html)
+    let view = new View(el, liveSocket)
+    view.onJoin({rendered: {s: [html], fingerprint: 123}})
+    let channelStub = {
+      validate: "",
+      nextValidate(payload) {
+        this.validate = Object.entries(payload)
+          .map(([key, value]) => `${encodeURIComponent(key)}=${value ? encodeURIComponent(value) : ""}`)
+          .join("&")
+      },
+      push(evt, payload, timeout) {
+        expect(payload.value).toBe(this.validate)
+        return {
+          receive(status, cb) {
+            if (status === "ok") {
+              let diff = {
+                s: [`
+                <form id="form" phx-change="validate">
+                  <label for="first_name">First Name</label>
+                  <input id="first_name" value="" name="user[first_name]" />
+                  <span class="feedback" phx-feedback-for="user[first_name]">can't be blank</span>
+
+                  <label for="last_name">Last Name</label>
+                  <input id="last_name" value="" name="user[last_name]" />
+                  <span class="feedback" phx-feedback-for="user[last_name]">can't be blank</span>
+                </form>
+                `],
+                fingerprint: 345
+              }
+              cb({diff: diff})
+              return this
+            } else {
+              return this
+            }
+          }
+        }
+      }
+    }
+    view.channel = channelStub
+
+    let first_name = view.el.querySelector("#first_name")
+    let last_name = view.el.querySelector("#last_name")
+    view.channel.nextValidate({"user[first_name]": null, "user[last_name]": null, "_target": "user[first_name]"})
+    // we have to set this manually since it's set by a change event that would require more plumbing with the liveSocket in the test to hook up
+    DOM.putPrivate(first_name, "phx-has-focused", true)
+    view.pushInput(first_name, el, "validate", first_name)
+    expect(el.querySelector(`[phx-feedback-for="${first_name.name}"`).classList.contains("phx-no-feedback")).toBeFalsy()
+    expect(el.querySelector(`[phx-feedback-for="${last_name.name}"`).classList.contains("phx-no-feedback")).toBeTruthy()
+
+    view.channel.nextValidate({"user[first_name]": null, "user[last_name]": null, "_target": "user[last_name]"})
+    DOM.putPrivate(last_name, "phx-has-focused", true)
+    view.pushInput(last_name, el, "validate", last_name)
+    expect(el.querySelector(`[phx-feedback-for="${first_name.name}"`).classList.contains("phx-no-feedback")).toBeFalsy()
+    expect(el.querySelector(`[phx-feedback-for="${last_name.name}"`).classList.contains("phx-no-feedback")).toBeFalsy()
   })
 
   test("adds auto ID to prevent teardown/re-add", () => {

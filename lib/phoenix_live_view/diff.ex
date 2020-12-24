@@ -105,9 +105,12 @@ defmodule Phoenix.LiveView.Diff do
   Render information stored in private changed.
   """
   def render_private(socket, diff) do
+    {_, diff} =
+      diff
+      |> maybe_put_reply(socket)
+      |> maybe_put_events(socket)
+
     diff
-    |> maybe_put_events(socket)
-    |> maybe_put_reply(socket)
   end
 
   @doc """
@@ -149,8 +152,8 @@ defmodule Phoenix.LiveView.Diff do
 
   defp maybe_put_events(diff, socket) do
     case Utils.get_push_events(socket) do
-      [_ | _] = events -> Map.put(diff, @events, events)
-      [] -> diff
+      [_ | _] = events -> {true, Map.put(diff, @events, events)}
+      [] -> {false, diff}
     end
   end
 
@@ -180,7 +183,7 @@ defmodule Phoenix.LiveView.Diff do
   It returns the updated `component_diffs` and the updated `components` or
   `:error` if the component cid does not exist.
   """
-  def with_component(socket, cid, component_diffs, components, fun) when is_integer(cid) do
+  def write_component(socket, cid, component_diffs, components, fun) when is_integer(cid) do
     {cid_to_component, _id_to_cid, _} = components
 
     case cid_to_component do
@@ -218,9 +221,29 @@ defmodule Phoenix.LiveView.Diff do
   end
 
   @doc """
+  Execute the `fun` with the component `cid` with the given `socket` and returns the result.
+
+  `:error` if the component cid does not exist.
+  """
+  def read_component(socket, cid, components, fun) when is_integer(cid) do
+    {cid_to_component, _id_to_cid, _} = components
+
+    case cid_to_component do
+      %{^cid => {component, _id, assigns, private, fingerprints}} ->
+          socket
+          |> configure_socket_for_component(assigns, private, fingerprints)
+          |> fun.(component)
+
+      %{} ->
+        :error
+    end
+  end
+
+
+  @doc """
   Sends an update to a component.
 
-  Like `with_component/5`, it will store the result under the `cid
+  Like `write_component/5`, it will store the result under the `cid
    key in the `component_diffs` map.
 
   If the component exists, a `{diff, new_components}` tuple
@@ -238,7 +261,7 @@ defmodule Phoenix.LiveView.Diff do
         updated_assigns = maybe_call_preload!(module, updated_assigns)
 
         {diff, new_components, :noop} =
-          with_component(socket, cid, %{}, components, fn component_socket, component ->
+          write_component(socket, cid, %{}, components, fn component_socket, component ->
             {Utils.maybe_call_update!(component_socket, component, updated_assigns), :noop}
           end)
 
@@ -547,10 +570,11 @@ defmodule Phoenix.LiveView.Diff do
   end
 
   defp render_component(socket, component, id, cid, new?, pending, cids, diffs, components) do
-    diffs = maybe_put_events(diffs, socket)
+    {events?, diffs} = maybe_put_events(diffs, socket)
+    changed? = new? or Utils.changed?(socket)
 
     {socket, pending, diff, {cid_to_component, id_to_cid, uuids}} =
-      if new? or Utils.changed?(socket) do
+      if changed? do
         rendered = Utils.to_rendered(socket, component)
 
         {changed?, linked_cid, prints} =
@@ -560,10 +584,16 @@ defmodule Phoenix.LiveView.Diff do
           traverse(socket, rendered, prints, pending, components, changed?)
 
         diff = if linked_cid, do: Map.put(diff, @static, linked_cid), else: diff
-        socket = Utils.clear_changed(%{socket | fingerprints: component_prints})
-        {socket, pending, diff, components}
+        {%{socket | fingerprints: component_prints}, pending, diff, components}
       else
         {socket, pending, %{}, components}
+      end
+
+    socket =
+      if changed? or events? do
+        Utils.clear_changed(socket)
+      else
+        socket
       end
 
     diffs =

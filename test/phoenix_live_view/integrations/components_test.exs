@@ -44,7 +44,6 @@ defmodule Phoenix.LiveView.ComponentTest do
 
   test "tracks additions and updates", %{conn: conn} do
     {:ok, view, _} = live(conn, "/components")
-
     html = render_click(view, "dup-and-disable", %{})
 
     assert [
@@ -264,6 +263,16 @@ defmodule Phoenix.LiveView.ComponentTest do
                {"div", [{"data-phx-component", "2"}, {"id", "jose"} | _],
                 ["\n  NEW-jose says hi\n  \n"]}
              ] = view |> element("#jose") |> render() |> DOM.parse()
+    end
+
+    test "updates child from independent pid", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/components")
+
+      Phoenix.LiveView.send_update(view.pid, StatefulComponent, [id: "chris", name: "NEW-chris", from: self()])
+      Phoenix.LiveView.send_update_after(view.pid, StatefulComponent, [id: "jose", name: "NEW-jose", from: self()], 10)
+      assert_receive {:updated, %{id: "chris", name: "NEW-chris"}}
+      assert_receive {:updated, %{id: "jose", name: "NEW-jose"}}
+      refute_receive {:updated, _}
     end
 
     test "updates without :id raise", %{conn: conn} do

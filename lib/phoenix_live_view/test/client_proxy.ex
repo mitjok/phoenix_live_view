@@ -32,8 +32,8 @@ defmodule Phoenix.LiveViewTest.ClientProxy do
   @doc """
   Reports upload progress to the proxy.
   """
-  def report_upload_progress(proxy_pid, from, element, entry_ref, percent) do
-    GenServer.call(proxy_pid, {:upload_progress, from, element, entry_ref, percent})
+  def report_upload_progress(proxy_pid, from, element, entry_ref, percent, cid) do
+    GenServer.call(proxy_pid, {:upload_progress, from, element, entry_ref, percent, cid})
   end
 
   @doc """
@@ -85,6 +85,12 @@ defmodule Phoenix.LiveViewTest.ClientProxy do
       topic: Phoenix.LiveView.Utils.random_id()
     }
 
+    # We build an absolute path to any relative
+    # static assets through the root LiveView's endpoint.
+    static_path =
+      endpoint.config(:otp_app)
+      |> Application.app_dir("priv/static")
+
     state = %{
       join_ref: 0,
       ref: 0,
@@ -95,6 +101,7 @@ defmodule Phoenix.LiveViewTest.ClientProxy do
       replies: %{},
       root_view: nil,
       html: root_html,
+      static_path: static_path,
       session: session,
       test_supervisor: test_supervisor,
       url: url,
@@ -342,7 +349,10 @@ defmodule Phoenix.LiveViewTest.ClientProxy do
   def handle_info(%Phoenix.Socket.Reply{ref: ref} = reply, state) do
     case fetch_reply(state, ref) do
       {:ok, {_pid, callback}} ->
-        callback.(reply, drop_reply(state, ref))
+        case handle_reply(state, reply) do
+          {:ok, new_state} -> callback.(reply, drop_reply(new_state, ref))
+          other -> other
+        end
 
       :error ->
         {:noreply, state}
@@ -364,8 +374,8 @@ defmodule Phoenix.LiveViewTest.ClientProxy do
     {:noreply, drop_view_by_id(state, view.id, reason)}
   end
 
-  def handle_call({:upload_progress, from, %Element{} = el, entry_ref, progress}, _, state) do
-    payload = %{"entry_ref" => entry_ref, "progress" => progress}
+  def handle_call({:upload_progress, from, %Element{} = el, entry_ref, progress, cid}, _, state) do
+    payload = put_cid(%{"entry_ref" => entry_ref, "progress" => progress}, cid)
     topic = proxy_topic(el)
     %{pid: pid} = fetch_view_by_topic!(state, topic)
     :ok = Phoenix.LiveView.Channel.ping(pid)
@@ -378,7 +388,7 @@ defmodule Phoenix.LiveViewTest.ClientProxy do
   end
 
   def handle_call(:html, _from, state) do
-    {:reply, {:ok, state.html}, state}
+    {:reply, {:ok, {state.html, state.static_path}}, state}
   end
 
   def handle_call({:live_children, topic}, from, state) do
@@ -411,23 +421,23 @@ defmodule Phoenix.LiveViewTest.ClientProxy do
     {:noreply, state}
   end
 
-  def handle_call({:render_allow_upload, topic, ref, entries}, from, state) do
+  def handle_call({:render_allow_upload, topic, ref, {entries, cid}}, from, state) do
     view = fetch_view_by_topic!(state, topic)
+    payload = put_cid(%{"ref" => ref, "entries" => entries}, cid)
 
-    state =
+    new_state =
       push_with_callback(
         state,
         view,
         "allow_upload",
-        %{"ref" => ref, "entries" => entries},
+        payload,
         fn reply, state ->
-          %{payload: payload, topic: _topic} = reply
-          GenServer.reply(from, {:ok, payload})
+          GenServer.reply(from, {:ok, reply.payload})
           {:noreply, state}
         end
       )
 
-    {:noreply, state}
+    {:noreply, new_state}
   end
 
   defp drop_view_by_id(state, id, reason) do
@@ -514,7 +524,8 @@ defmodule Phoenix.LiveViewTest.ClientProxy do
         payload = %{"cids" => will_destroy_cids}
 
         push_with_callback(state, view, "cids_will_destroy", payload, fn _, state ->
-          payload = %{"cids" => will_destroy_cids -- DOM.component_ids(view.id, state.html)}
+          still_there_cids = DOM.component_ids(view.id, state.html)
+          payload = %{"cids" => Enum.reject(will_destroy_cids, &(&1 in still_there_cids))}
 
           state =
             push_with_callback(state, view, "cids_destroyed", payload, fn reply, state ->
@@ -553,16 +564,13 @@ defmodule Phoenix.LiveViewTest.ClientProxy do
   end
 
   defp render_reply(reply, from, state) do
-    %{payload: diff, topic: topic} = reply
-    new_state = merge_rendered(state, topic, diff)
-
-    case fetch_view_by_topic(new_state, topic) do
+    case fetch_view_by_topic(state, reply.topic) do
       {:ok, view} ->
-        GenServer.reply(from, {:ok, new_state.html |> DOM.inner_html!(view.id) |> DOM.to_html()})
-        new_state
+        GenServer.reply(from, {:ok, state.html |> DOM.inner_html!(view.id) |> DOM.to_html()})
+        state
 
       :error ->
-        new_state
+        state
     end
   end
 
@@ -655,23 +663,32 @@ defmodule Phoenix.LiveViewTest.ClientProxy do
 
   defp push_with_reply(state, from, view, event, payload) do
     push_with_callback(state, view, event, payload, fn reply, state ->
-      %{payload: payload, topic: topic} = reply
-
-      case payload do
-        %{live_redirect: %{to: _to} = opts} ->
-          stop_redirect(state, topic, {:live_redirect, opts})
-
-        %{live_patch: %{to: _to} = opts} ->
-          send_patch(state, topic, opts)
-          {:noreply, render_reply(reply, from, state)}
-
-        %{redirect: %{to: _to} = opts} ->
-          stop_redirect(state, topic, {:redirect, opts})
-
-        %{} ->
-          {:noreply, render_reply(reply, from, state)}
-      end
+      {:noreply, render_reply(reply, from, state)}
     end)
+  end
+
+  defp handle_reply(state, reply) do
+    %{payload: payload, topic: topic} = reply
+    new_state =
+      case payload do
+        %{diff: diff} -> merge_rendered(state, topic, diff)
+        %{} = diff -> merge_rendered(state, topic, diff)
+      end
+
+    case payload do
+      %{live_redirect: %{to: _to} = opts} ->
+        stop_redirect(new_state, topic, {:live_redirect, opts})
+
+      %{live_patch: %{to: _to} = opts} ->
+        send_patch(new_state, topic, opts)
+        {:ok, new_state}
+
+      %{redirect: %{to: _to} = opts} ->
+        stop_redirect(new_state, topic, {:redirect, opts})
+
+      %{} ->
+        {:ok, new_state}
+    end
   end
 
   defp push_with_callback(state, view, event, payload, callback) do
@@ -1132,4 +1149,7 @@ defmodule Phoenix.LiveViewTest.ClientProxy do
   end
 
   defp maybe_put_uploads(_state, _view, payload, nil), do: payload
+
+  defp put_cid(payload, nil), do: payload
+  defp put_cid(payload, cid), do: Map.put(payload, "cid", cid)
 end
