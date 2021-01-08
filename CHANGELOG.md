@@ -1,11 +1,17 @@
 # Changelog
 
-## 0.15.2
+## 0.15.3 (2021-01-02)
+
+### Bug fixes
+  - Fix `push_redirect` back causing timeout on the client
+
+## 0.15.2 (2021-01-01)
 
 ### Backwards incompatible changes
   - Remove `beforeDestroy` from phx-hook callbacks
 
 ### Bug fixes
+  - Fix form recovery failing to send input on first connection failure
   - Fix hooks not getting remounted after liveview reconnect
   - Fix hooks `reconnected` callback being fired with no prior disconnect
 

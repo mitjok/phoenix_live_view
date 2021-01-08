@@ -1544,7 +1544,7 @@ export let DOM = {
   discardError(container, el, phxFeedbackFor){
     let field = el.getAttribute && el.getAttribute(phxFeedbackFor)
     // TODO: Remove id lookup after we update Phoenix to use input_name instead of input_id
-    let input = field && container.querySelector(`#${field}, [name="${field}"]`)
+    let input = field && container.querySelector(`[id="${field}"], [name="${field}"]`)
     if(!input){ return }
 
     if(!(this.private(input, PHX_HAS_FOCUSED) || this.private(input.form, PHX_HAS_SUBMITTED))){
@@ -1911,7 +1911,8 @@ class DOMPatch {
   }
 
   forceFocusedSelectUpdate(fromEl, toEl){
-    return fromEl.multiple === true || (fromEl.type === "select" && fromEl.innerHTML != toEl.innerHTML)
+    let isSelect = ["select", "select-one", "select-multiple"].find((t) => t === fromEl.type)
+    return fromEl.multiple === true || (isSelect && fromEl.innerHTML != toEl.innerHTML)
   }
 
   isCIDPatch(){ return this.cidPatch }
@@ -2821,7 +2822,7 @@ export class View {
   }
 
   formsForRecovery(html){
-    if(this.joinCount <= 1){ return [] }
+    if(this.joinCount === 0){ return [] }
 
     let phxChange = this.binding("change")
     let template = document.createElement("template")
